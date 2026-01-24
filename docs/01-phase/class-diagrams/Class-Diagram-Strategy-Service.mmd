@@ -1,0 +1,755 @@
+classDiagram
+    %% Controllers (HTTP Layer)
+
+    %% STRATEGY DOMAIN: Strategy creation, versioning, publishing
+    class StrategyController {
+        -strategyManager: StrategyManager
+        -favoritesManager: FavoritesManager
+        +CreateStrategy(request: CreateStrategyRequest) StrategyResponse
+        +UpdateStrategy(id: UUID, request: UpdateStrategyRequest) StrategyResponse
+        +DeleteStrategy(id: UUID) void
+        +GetStrategy(id: UUID, versionNumber: int|null, userID: UUID) StrategyResponse
+        +ListStrategies(userID: UUID, filters: StrategyFilters, page: int, pageSize: int) PaginatedStrategyResponse
+        +ValidateStrategy(request: ValidateStrategyRequest) ValidationResponse
+        +PublishAsPublic(id: UUID, versionNumber: int, userID: UUID) StrategyResponse
+        +UnpublishPublic(id: UUID, userID: UUID) void
+        +GetStrategyVersions(id: UUID, userID: UUID, page: int, pageSize: int) PaginatedVersionResponse
+        +GetStrategyVersion(id: UUID, versionNumber: int, userID: UUID) VersionDetailResponse
+        +RevertToVersion(id: UUID, versionNumber: int, description: string, userID: UUID) StrategyResponse
+        +AddToFavorites(userID: UUID, strategyID: UUID) void
+        +RemoveFromFavorites(userID: UUID, strategyID: UUID) void
+    }
+
+    class AdminStrategyController {
+        -adminManager: AdminStrategyManager
+        -tagManager: TagManager
+        +PublishStrategyAsTemplate(id: UUID, versionNumber: int, adminID: UUID) StrategyResponse
+        +UnpublishTemplate(id: UUID, adminID: UUID) void
+        +ListAllStrategies(filters: AdminStrategyFilters, page: int, pageSize: int) PaginatedStrategyResponse
+        +CreatePublicTag(tagName: string, description: string) TagResponse
+        +ListAllTags(visibility: string, sort: string, page: int, pageSize: int) PaginatedTagResponse
+        +ConvertTagToPublic(tagID: UUID) TagResponse
+        +MergeTags(sourceTagIDs: List~UUID~, targetTagID: UUID) MergeResult
+        +DeleteTag(tagID: UUID, force: bool) void
+    }
+
+    %% TAG DOMAIN: User-created and public tags for organizing STRATEGIES
+    class TagController {
+        -tagManager: TagManager
+        +SearchTags(query: string, page: int, pageSize: int, userID: UUID) PaginatedTagResponse
+        +GetStrategyTags(strategyID: UUID) List~Tag~
+        +AddTagToStrategy(strategyID: UUID, tagName: string, userID: UUID) TagResponse
+        +RemoveTagFromStrategy(strategyID: UUID, tagID: UUID, userID: UUID) void
+    }
+
+    %% INDICATOR DOMAIN: Technical indicators catalog and CATEGORIES for organizing indicators
+    class IndicatorController {
+        -indicatorManager: IndicatorManager
+        -categoryManager: CategoryManager
+        +GetIndicators(activeOnly: bool, library: string, categoryID: UUID, page: int, pageSize: int) PaginatedIndicatorResponse
+        +GetIndicatorDetails(name: string) IndicatorDetailsResponse
+        +GetIndicatorCategories(page: int|null, pageSize: int|null) PaginatedCategoryResponse
+        +SyncIndicators(library: string) SyncResult
+        +CreateCategory(name: string, description: string, displayOrder: int) CategoryResponse
+        +UpdateCategory(categoryID: UUID, updates: CategoryUpdate) CategoryResponse
+        +ReorderCategories(categoryOrders: List~CategoryOrder~) void
+        +DeleteCategory(categoryID: UUID, reassignTo: UUID) void
+    }
+
+    %% Core Business Logic
+    class StrategyManager {
+        -repository: IStrategyRepository
+        -codeValidator: CodeValidator
+        -versionManager: VersionManager
+        -eventLogger: StrategyEventLogger
+        -blobStorage: IBlobStorage
+        +Create(userID: UUID, strategy: Strategy) (Strategy, error)
+        +Update(id: UUID, strategy: Strategy) (Strategy, error)
+        +Delete(id: UUID) error
+        +GetByID(id: UUID, versionNumber: int|null, userID: UUID) (Strategy, error)
+        +List(userID: UUID, filters: StrategyFilters, page: int, pageSize: int) ([]Strategy, int, error)
+        +Validate(code: string) ValidationResult
+        +PublishAsPublic(strategyID: UUID, versionNumber: int, userID: UUID) error
+        +UnpublishPublic(strategyID: UUID, userID: UUID) error
+        +GetVersionHistory(strategyID: UUID, userID: UUID, page: int, pageSize: int) ([]StrategyVersion, int, error)
+        +GetVersion(strategyID: UUID, versionNumber: int, userID: UUID) (StrategyVersion, error)
+        +RevertToVersion(strategyID: UUID, targetVersionNumber: int, description: string, userID: UUID) (Strategy, error)
+        -ensureUserOwnership(userID: UUID, strategyID: UUID) error
+    }
+
+    class AdminStrategyManager {
+        -repository: IStrategyRepository
+        -versionManager: VersionManager
+        -codeValidator: CodeValidator
+        -eventLogger: StrategyEventLogger
+        +PublishAsTemplate(strategyID: UUID, versionNumber: int, adminID: UUID) error
+        +UnpublishTemplate(strategyID: UUID, adminID: UUID) error
+        +ValidateAdmin(userID: UUID) error
+    }
+
+    class TagManager {
+        -repository: ITagRepository
+        +AddTagToStrategy(strategyID: UUID, tagName: string, userID: UUID) (Tag, error)
+        +RemoveTagFromStrategy(strategyID: UUID, tagID: UUID, userID: UUID) error
+        +SearchTags(query: string, page: int, pageSize: int, userID: UUID) ([]Tag, int, error)
+        +GetTagsByStrategy(strategyID: UUID) ([]Tag, error)
+        +CreatePublicTag(tagName: string, description: string) (Tag, error)
+        +ListAllTags(visibility: string, sort: string, page: int, pageSize: int) ([]Tag, int, error)
+        +ConvertTagToPublic(tagID: UUID) (Tag, error)
+        +MergeTags(sourceTagIDs: []UUID, targetTagID: UUID) (MergeResult, error)
+        +DeleteTag(tagID: UUID, force: bool) error
+        -findOrCreateTag(tagName: string, userID: UUID) (Tag, error)
+        -validateTagName(tagName: string) error
+    }
+
+    class FavoritesManager {
+        -repository: IFavoritesRepository
+        +AddFavorite(userID: UUID, strategyID: UUID) error
+        +RemoveFavorite(userID: UUID, strategyID: UUID) error
+        +IsFavorited(userID: UUID, strategyID: UUID) bool
+        +GetUserFavorites(userID: UUID) List~UUID~
+    }
+
+    class CategoryManager {
+        -repository: ICategoryRepository
+        -cache: IIndicatorCache
+        +CreateCategory(name: string, description: string, displayOrder: int) IndicatorCategory
+        +UpdateCategory(categoryID: UUID, updates: CategoryUpdate) IndicatorCategory
+        +DeleteCategory(categoryID: UUID, reassignTo: UUID) error
+        +ReorderCategories(categoryOrders: List~CategoryOrder~) error
+        +GetAllCategories(includeStats: bool, page: int, pageSize: int) PaginatedCategoryResponse
+        -invalidateCache() error
+
+        Note: '''
+        Manages INDICATOR categories (Trend, Momentum, Volatility, etc.)
+        NOT related to strategy tags
+        '''
+    }
+
+    class CodeValidator {
+        -maxCodeLength: int
+        -allowedImports: List~string~
+        -forbiddenPatterns: List~string~
+        +Validate(code: string) ValidationResult
+        +ValidateSyntax(code: string) SyntaxValidationResult
+        +CheckSecurity(code: string) SecurityValidationResult
+        +CheckIndicatorUsage(code: string) IndicatorValidationResult
+        -detectDangerousImports(code: string) List~SecurityIssue~
+        -detectForbiddenPatterns(code: string) List~SecurityIssue~
+        -parseAST(code: string) ASTNode
+    }
+
+    class VersionManager {
+        -repository: IStrategyRepository
+        +CreateVersion(strategyID: UUID, code: string, description: string) (StrategyVersion, error)
+        +GetVersions(strategyID: UUID, page: int, pageSize: int) ([]StrategyVersion, int, error)
+        +GetVersionsWithMetadata(strategyID: UUID, currentVersionID: UUID, templateVersionID: UUID, publishedVersionID: UUID, page: int, pageSize: int) ([]StrategyVersion, int, error)
+        +GetVersionByNumber(strategyID: UUID, versionNumber: int) (StrategyVersion, error)
+        +GetVersion(versionID: UUID) (StrategyVersion, error)
+        +RevertToVersion(strategyID: UUID, versionNumber: int) (Strategy, error)
+        +CompareVersions(versionID1: UUID, versionID2: UUID) (VersionDiff, error)
+        -calculateDiff(oldCode: string, newCode: string) VersionDiff
+    }
+
+    class StrategyEventLogger {
+        -repository: IStrategyEventRepository
+        +LogCreated(strategyID: UUID, userID: UUID, metadata: map) error
+        +LogUpdated(strategyID: UUID, userID: UUID, metadata: map) error
+        +LogDeleted(strategyID: UUID, userID: UUID, metadata: map) error
+        +LogVersionCreated(strategyID: UUID, userID: UUID, versionNumber: int, metadata: map) error
+        +LogPublishedAsTemplate(strategyID: UUID, adminID: UUID, versionNumber: int, metadata: map) error
+        +LogPublishedAsPublic(strategyID: UUID, userID: UUID, versionNumber: int, metadata: map) error
+        +LogUnpublished(strategyID: UUID, userID: UUID, metadata: map) error
+        +GetEvents(strategyID: UUID, filters: EventFilters) List~StrategyEvent~
+    }
+
+    class IndicatorManager {
+        -repository: IIndicatorRepository
+        -cache: IIndicatorCache
+        -backtestingClient: BacktestingServiceClient
+        -syncInterval: Duration
+        +List(filters: IndicatorFilters, userID: UUID, page: int, pageSize: int) ([]Indicator, int, error)
+        +GetIndicatorByName(name: string) (Indicator, error)
+        +GetCategories() ([]IndicatorCategory, error)
+        +UpdateMetadata(name: string, metadata: IndicatorMetadata) error
+        +ActivateDeactivate(indicatorID: UUID, isActive: bool) error
+        +SyncFromBacktestingService(library: string) SyncResult
+        -cacheTopIndicators() error
+        -mergeTechnicalSpecs(existing: Indicator, fetched: IndicatorDefinition) Indicator
+        -assignCategory(indicator: Indicator) UUID
+    }
+
+    %% HTTP Client
+    class BacktestingServiceClient {
+        -httpClient: HTTPClient
+        -baseURL: string
+        -timeout: Duration
+        +FetchIndicators() List~IndicatorDefinition~
+        +FetchIndicatorDetails(name: string) IndicatorDefinition
+        -buildRequest(endpoint: string) HTTPRequest
+        -handleResponse(response: HTTPResponse) Result
+        -retryWithBackoff(request: HTTPRequest, maxRetries: int) HTTPResponse
+    }
+
+    %% Repository Interfaces
+    class IStrategyRepository {
+        <<interface>>
+        // Strategy CRUD
+        +Save(strategy: Strategy) (UUID, error)
+        +Update(strategy: Strategy) error
+        +Delete(id: UUID) error
+        +SoftDelete(id: UUID) error
+        +FindByID(id: UUID) (Strategy, error)
+        +FindByIDWithDetails(id: UUID) (Strategy, error)
+
+        // Strategy Queries
+        +FindByUserIDPaginated(userID: UUID, filters: StrategyFilters, page: int, pageSize: int) ([]Strategy, int, error)
+        +FindPublicPaginated(filters: StrategyFilters, page: int, pageSize: int) ([]Strategy, int, error)
+        +FindTemplatesPaginated(filters: StrategyFilters, page: int, pageSize: int) ([]Strategy, int, error)
+        +CheckQuota(userID: UUID) (int, error)
+        +CheckDuplicateName(userID: UUID, name: string) (bool, error)
+
+        // Publishing
+        +UpdatePublishStatus(strategyID: UUID, isPublic: bool, publishedVersionID: UUID) error
+        +UpdateTemplateStatus(strategyID: UUID, isTemplate: bool, templateVersionID: UUID) error
+
+        // Version Management
+        +SaveVersion(version: StrategyVersion) (UUID, error)
+        +GetVersionsPaginated(strategyID: UUID, page: int, pageSize: int) ([]StrategyVersion, int, error)
+        +GetVersion(versionID: UUID) (StrategyVersion, error)
+        +GetVersionWithDetails(versionID: UUID) (StrategyVersion, error)
+        +GetVersionByNumber(strategyID: UUID, versionNumber: int) (StrategyVersion, error)
+        +CreateVersionFromCode(strategyID: UUID, versionNumber: int, code: string, description: string, userID: UUID) (UUID, error)
+        +UpdateCode(strategyID: UUID, code: string, versionID: UUID) error
+    }
+
+    class ITagRepository {
+        <<interface>>
+        // Tag CRUD
+        +Save(tag: Tag) (UUID, error)
+        +Update(tag: Tag) error
+        +Delete(id: UUID) error
+        +FindByID(id: UUID) (Tag, error)
+        +FindByName(name: string, userID: UUID) (Tag, error)
+
+        // Tag Search
+        +SearchTags(query: string, userID: UUID, page: int, pageSize: int) ([]Tag, int, error)
+        +FindAll(visibility: string, sort: string, page: int, pageSize: int) ([]Tag, int, error)
+
+        // Strategy-Tag Linking
+        +LinkTagToStrategy(strategyID: UUID, tagID: UUID, userID: UUID) error
+        +UnlinkTagFromStrategy(strategyID: UUID, tagID: UUID) error
+        +GetStrategyTags(strategyID: UUID) ([]Tag, error)
+
+        // Usage Count
+        +IncrementUsageCount(tagID: UUID) error
+        +DecrementUsageCount(tagID: UUID) error
+
+        // Tag Merging
+        +MergeTags(sourceTagIDs: []UUID, targetTagID: UUID) (int, error)
+        +BulkReassignTag(oldTagID: UUID, newTagID: UUID) (int, error)
+
+        // Tag Validation
+        +CheckDuplicateName(name: string, userID: UUID, excludeTagID: UUID) (bool, error)
+    }
+
+    class IFavoritesRepository {
+        <<interface>>
+        +Save(userID: UUID, strategyID: UUID) error
+        +Delete(userID: UUID, strategyID: UUID) error
+        +FindByUser(userID: UUID) ([]UUID, error)
+        +Exists(userID: UUID, strategyID: UUID) (bool, error)
+    }
+
+    class IStrategyEventRepository {
+        <<interface>>
+        +SaveEvent(event: StrategyEvent) error
+        +GetEvents(strategyID: UUID, filters: EventFilters) ([]StrategyEvent, error)
+    }
+
+    class IIndicatorRepository {
+        <<interface>>
+        // Indicator CRUD
+        +Save(indicator: Indicator) (UUID, error)
+        +Update(indicator: Indicator) error
+        +Upsert(indicator: Indicator) (UUID, error)
+        +FindAll(page: int, pageSize: int) ([]Indicator, int, error)
+        +FindByName(name: string) (Indicator, error)
+        +FindActive(page: int, pageSize: int) ([]Indicator, int, error)
+        +FindByCategoryID(categoryID: UUID, page: int, pageSize: int) ([]Indicator, int, error)
+        +FindByLibrary(library: string, page: int, pageSize: int) ([]Indicator, int, error)
+
+        // Indicator Status
+        +UpdateActiveStatus(indicatorID: UUID, isActive: bool) error
+        +BulkUpdateActiveStatus(indicatorIDs: []UUID, isActive: bool) error
+
+        // Category Management (Note: Also available in ICategoryRepository)
+        +SaveCategory(category: IndicatorCategory) error
+        +UpdateCategory(category: IndicatorCategory) error
+        +DeleteCategory(categoryID: UUID) error
+        +FindAllCategories(page: int, pageSize: int) ([]IndicatorCategory, int, error)
+        +FindCategoryByID(categoryID: UUID) (IndicatorCategory, error)
+        +FindCategoryByName(name: string) (IndicatorCategory, error)
+    }
+
+    class ICategoryRepository {
+        <<interface>>
+        +Save(category: IndicatorCategory) (UUID, error)
+        +Update(category: IndicatorCategory) error
+        +Delete(id: UUID) error
+        +FindByID(id: UUID) (IndicatorCategory, error)
+        +FindByName(name: string) (IndicatorCategory, error)
+        +FindAll(includeStats: bool, page: int, pageSize: int) ([]IndicatorCategory, int, error)
+        +GetIndicatorCount(categoryID: UUID) (int, error)
+        +Reorder(categoryOrders: []CategoryOrder) error
+    }
+
+    %% Repository Implementations
+    class StrategyRepository {
+        -db: Database
+        +Save(strategy: Strategy) error
+        +Update(strategy: Strategy) error
+        +Delete(id: UUID) error
+        +FindByID(id: UUID) Strategy
+        +FindByUserID(userID: UUID, filters: StrategyFilters) List~Strategy~
+        +FindPublic(filters: StrategyFilters) List~Strategy~
+        +FindTemplates(filters: StrategyFilters) List~Strategy~
+        +SaveVersion(version: StrategyVersion) error
+        +GetVersions(strategyID: UUID) List~StrategyVersion~
+        +GetVersion(versionID: UUID) StrategyVersion
+        +GetVersionByNumber(strategyID: UUID, versionNumber: int) StrategyVersion
+        +UpdatePublishStatus(strategyID: UUID, isPublic: bool, publishedVersionID: UUID) error
+        +UpdateTemplateStatus(strategyID: UUID, isTemplate: bool, templateVersionID: UUID) error
+        -buildWhereClause(filters: StrategyFilters) string
+        -applyPagination(query: Query, pagination: Pagination) Query
+    }
+
+    class TagRepository {
+        -db: Database
+        +Save(tag: Tag) error
+        +Update(tag: Tag) error
+        +Delete(id: UUID) error
+        +FindByID(id: UUID) Tag
+        +FindByName(name: string, userID: UUID) Tag
+        +SearchTags(query: string, userID: UUID, limit: int) List~Tag~
+        +FindAll(visibility: string, sort: string) List~Tag~
+        +LinkTagToStrategy(strategyID: UUID, tagID: UUID, userID: UUID) error
+        +UnlinkTagFromStrategy(strategyID: UUID, tagID: UUID) error
+        +GetStrategyTags(strategyID: UUID) List~Tag~
+        +IncrementUsageCount(tagID: UUID) error
+        +DecrementUsageCount(tagID: UUID) error
+        -toModel(row: DatabaseRow) Tag
+        -fromModel(tag: Tag) DatabaseRow
+    }
+
+    class FavoritesRepository {
+        -db: Database
+        +Save(userID: UUID, strategyID: UUID) error
+        +Delete(userID: UUID, strategyID: UUID) error
+        +FindByUser(userID: UUID) List~UUID~
+        +Exists(userID: UUID, strategyID: UUID) bool
+    }
+
+    class StrategyEventRepository {
+        -db: Database
+        +SaveEvent(event: StrategyEvent) error
+        +GetEvents(strategyID: UUID, filters: EventFilters) List~StrategyEvent~
+        -toModel(row: DatabaseRow) StrategyEvent
+        -fromModel(event: StrategyEvent) DatabaseRow
+    }
+
+    class IndicatorRepository {
+        -db: Database
+        +Save(indicator: Indicator) error
+        +Update(indicator: Indicator) error
+        +FindAll() List~Indicator~
+        +FindByName(name: string) Indicator
+        +FindActive() List~Indicator~
+        +FindByCategoryID(categoryID: UUID) List~Indicator~
+        +FindByLibrary(library: string) List~Indicator~
+        +SaveCategory(category: IndicatorCategory) error
+        +UpdateCategory(category: IndicatorCategory) error
+        +DeleteCategory(categoryID: UUID) error
+        +FindAllCategories() List~IndicatorCategory~
+        +FindCategoryByID(categoryID: UUID) IndicatorCategory
+        -toModel(row: DatabaseRow) Indicator
+        -fromModel(indicator: Indicator) DatabaseRow
+        -toCategoryModel(row: DatabaseRow) IndicatorCategory
+    }
+
+    class CategoryRepository {
+        -db: Database
+        +Save(category: IndicatorCategory) error
+        +Update(category: IndicatorCategory) error
+        +Delete(id: UUID) error
+        +FindByID(id: UUID) IndicatorCategory
+        +FindAll(includeStats: bool) List~IndicatorCategory~
+        +Reorder(categoryOrders: List~CategoryOrder~) error
+        -toModel(row: DatabaseRow) IndicatorCategory
+        -fromModel(category: IndicatorCategory) DatabaseRow
+    }
+
+    %% Cache Interfaces
+    class IIndicatorCache {
+        <<interface>>
+        +Get(key: string) Indicator
+        +Set(key: string, indicator: Indicator, ttl: Duration) error
+        +Delete(key: string) error
+        +Invalidate(pattern: string) error
+    }
+
+    class IBlobStorage {
+        <<interface>>
+        +Upload(key: string, data: bytes) string
+        +Download(key: string) bytes
+        +Delete(key: string) error
+        +GetURL(key: string) string
+    }
+
+    %% Cache Implementation
+    class IndicatorCache {
+        -redis: RedisClient
+        -keyPrefix: string
+        -defaultTTL: Duration
+        +Get(key: string) Indicator
+        +Set(key: string, indicator: Indicator, ttl: Duration) error
+        +Delete(key: string) error
+        +Invalidate(pattern: string) error
+        -buildKey(key: string) string
+        -serialize(indicator: Indicator) string
+        -deserialize(data: string) Indicator
+    }
+
+    class BlobStorageAdapter {
+        -azureClient: AzureBlobClient
+        -containerName: string
+        +Upload(key: string, data: bytes) string
+        +Download(key: string) bytes
+        +Delete(key: string) error
+        +GetURL(key: string) string
+        -generateSASToken(key: string) string
+    }
+
+    %% Domain Models
+    class Strategy {
+        +ID: UUID
+        +UserID: UUID
+        +Name: string
+        +Description: TEXT
+        +Code: TEXT
+        +Status: StrategyStatus
+        +IsTemplate: bool
+        +IsPublic: bool
+        +CreatedByAdmin: bool
+        +CurrentVersionID: UUID
+        +TemplateVersionID: UUID
+        +PublishedVersionID: UUID
+        +VersionCount: int
+        +ImageURL: string
+        +BacktestCount: int
+        +LastBacktestedAt: Time
+        +CreatedAt: Time
+        +UpdatedAt: Time
+        +Validate() error
+        +IsOwnedBy(userID: UUID) bool
+        +CanBePublished() bool
+    }
+
+    class StrategyVersion {
+        +ID: UUID
+        +StrategyID: UUID
+        +VersionNumber: int
+        +Code: string
+        +Description: string
+        +CreatedAt: Time
+        +CreatedBy: UUID
+    }
+
+    class Tag {
+        +ID: UUID
+        +Name: string
+        +CreatedByUserID: UUID
+        +IsPublic: bool
+        +UsageCount: int
+        +CreatedAt: Time
+        +UpdatedAt: Time
+        +Normalize() string
+        +IsOwnedBy(userID: UUID) bool
+
+        Note: '''
+        Tags for organizing STRATEGIES (e.g., "trend-following", "scalping")
+        Can be user-created (private) or admin-created (public)
+        '''
+    }
+
+    class StrategyEvent {
+        +ID: UUID
+        +StrategyID: UUID
+        +UserID: UUID
+        +EventType: string
+        +EventTimestamp: Time
+        +EventDescription: string
+        +EventMetadata: map
+    }
+
+    class Indicator {
+        +IndicatorID: UUID
+        +CategoryID: UUID
+        +Name: string
+        +FullName: string
+        +Library: string
+        +Description: string
+        +UsageExample: string
+        +CommonUseCases: List~string~
+        +Active: bool
+        +TechnicalSpec: TechnicalSpec
+        +PopularPeriods: List~int~
+        +Thresholds: Map~string,float~
+        +CreatedAt: Time
+        +UpdatedAt: Time
+    }
+
+    class IndicatorCategory {
+        +CategoryID: UUID
+        +Name: string
+        +Description: string
+        +DisplayOrder: int
+        +Icon: string
+        +CreatedAt: Time
+        +UpdatedAt: Time
+
+        Note: '''
+        Categories for organizing INDICATORS (e.g., "Trend", "Momentum", "Volatility")
+        NOT related to strategy tags
+        System-defined, managed by admins only
+        '''
+    }
+
+    class TechnicalSpec {
+        +Parameters: List~Parameter~
+        +Input: List~string~
+        +Output: List~string~
+        +Function: string
+    }
+
+    class Parameter {
+        +Name: string
+        +Type: string
+        +Default: any
+        +Min: float
+        +Max: float
+        +Description: string
+    }
+
+    class IndicatorDefinition {
+        +Name: string
+        +FullName: string
+        +Category: string
+        +Parameters: List~Parameter~
+        +Input: List~string~
+        +Output: List~string~
+        +Function: string
+    }
+
+    %% Value Objects
+    class ValidationResult {
+        +Valid: bool
+        +Errors: List~ValidationError~
+        +Warnings: List~ValidationWarning~
+        +SyntaxValid: bool
+        +SecurityValid: bool
+        +IndicatorsValid: bool
+    }
+
+    class ValidationError {
+        +Code: string
+        +Message: string
+        +Line: int
+        +Column: int
+        +Severity: ErrorSeverity
+    }
+
+    class StrategyFilters {
+        +Scope: string
+        +Status: StrategyStatus
+        +IsPublic: bool
+        +IsTemplate: bool
+        +IsFavorited: bool
+        +Tags: List~string~
+        +Search: string
+        +SortBy: string
+        +SortOrder: string
+        +Pagination: Pagination
+    }
+
+
+    class VersionDiff {
+        +OldVersionNumber: int
+        +NewVersionNumber: int
+        +AddedLines: List~DiffLine~
+        +RemovedLines: List~DiffLine~
+        +ModifiedLines: List~DiffLine~
+        +ChangeCount: int
+    }
+
+    class DiffLine {
+        +LineNumber: int
+        +Content: string
+        +Type: DiffType
+    }
+
+    class MergeResult {
+        +TargetTag: Tag
+        +MergedTags: List~Tag~
+        +StrategiesUpdated: int
+        +DuplicatesRemoved: int
+    }
+
+    class SyncResult {
+        +IndicatorsSynced: int
+        +NewIndicators: int
+        +UpdatedIndicators: int
+        +Errors: List~error~
+        +Duration: Duration
+    }
+
+    class CategoryOrder {
+        +CategoryID: UUID
+        +DisplayOrder: int
+    }
+
+    class PaginatedTagResponse {
+        +Data: List~Tag~
+        +Pagination: Pagination
+    }
+
+    class PaginatedCategoryResponse {
+        +Data: List~IndicatorCategory~
+        +Pagination: Pagination
+    }
+
+    class Pagination {
+        +Page: int
+        +PageSize: int
+        +TotalItems: int
+        +TotalPages: int
+        +HasNextPage: bool
+        +HasPreviousPage: bool
+    }
+
+    %% Enums
+    class StrategyStatus {
+        <<enumeration>>
+        DRAFT
+        ACTIVE
+        ARCHIVED
+        DELETED
+    }
+
+    class ErrorSeverity {
+        <<enumeration>>
+        ERROR
+        WARNING
+        INFO
+    }
+
+    class IndicatorLibrary {
+        <<enumeration>>
+        TALIB
+        PANDAS_TA
+        CUSTOM
+    }
+
+    class DiffType {
+        <<enumeration>>
+        ADDED
+        REMOVED
+        MODIFIED
+    }
+
+    %% Relationships
+    StrategyController --> StrategyManager
+    StrategyController --> TagManager
+    StrategyController --> FavoritesManager
+    StrategyController --> IndicatorManager
+
+    AdminStrategyController --> AdminStrategyManager
+    AdminStrategyController --> TagManager
+
+    TagController --> TagManager
+
+    IndicatorController --> IndicatorManager
+    IndicatorController --> CategoryManager
+
+    StrategyManager --> IStrategyRepository
+    StrategyManager --> CodeValidator
+    StrategyManager --> VersionManager
+    StrategyManager --> StrategyEventLogger
+    StrategyManager --> IBlobStorage
+    StrategyManager ..> Strategy
+    StrategyManager ..> ValidationResult
+
+    AdminStrategyManager --> IStrategyRepository
+    AdminStrategyManager --> VersionManager
+    AdminStrategyManager --> CodeValidator
+    AdminStrategyManager --> StrategyEventLogger
+
+    TagManager --> ITagRepository
+    TagManager ..> Tag
+    TagManager ..> MergeResult
+    TagManager ..> PaginatedTagResponse
+
+    FavoritesManager --> IFavoritesRepository
+
+    CategoryManager --> ICategoryRepository
+    CategoryManager --> IIndicatorCache
+    CategoryManager ..> IndicatorCategory
+    CategoryManager ..> PaginatedCategoryResponse
+
+    VersionManager --> IStrategyRepository
+    VersionManager ..> StrategyVersion
+    VersionManager ..> VersionDiff
+
+    StrategyEventLogger --> IStrategyEventRepository
+    StrategyEventLogger ..> StrategyEvent
+
+    CodeValidator ..> ValidationResult
+    CodeValidator ..> ValidationError
+
+    IndicatorManager --> IIndicatorRepository
+    IndicatorManager --> IIndicatorCache
+    IndicatorManager --> BacktestingServiceClient
+    IndicatorManager ..> Indicator
+    IndicatorManager ..> IndicatorCategory
+    IndicatorManager ..> SyncResult
+
+    BacktestingServiceClient ..> IndicatorDefinition
+
+    StrategyRepository ..|> IStrategyRepository
+    TagRepository ..|> ITagRepository
+    FavoritesRepository ..|> IFavoritesRepository
+    StrategyEventRepository ..|> IStrategyEventRepository
+    IndicatorRepository ..|> IIndicatorRepository
+    CategoryRepository ..|> ICategoryRepository
+    IndicatorCache ..|> IIndicatorCache
+    BlobStorageAdapter ..|> IBlobStorage
+
+    Strategy --> StrategyStatus
+
+    Indicator --> TechnicalSpec
+    Indicator --> IndicatorCategory
+    TechnicalSpec --> Parameter
+
+    ValidationResult --> ValidationError
+    ValidationError --> ErrorSeverity
+
+    VersionDiff --> DiffLine
+    DiffLine --> DiffType
+
+    PaginatedTagResponse --> Tag
+    PaginatedTagResponse --> Pagination
+
+    PaginatedCategoryResponse --> IndicatorCategory
+    PaginatedCategoryResponse --> Pagination
+
+    StrategyFilters ..> StrategyStatus

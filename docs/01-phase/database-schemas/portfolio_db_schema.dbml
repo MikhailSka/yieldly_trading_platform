@@ -1,0 +1,585 @@
+// Yieldly Portfolio Database Schema
+// Database: portfolio_db (PostgreSQL)
+
+// Enums
+Enum transaction_type {
+  trade       // Buy or sell trade
+  deposit     // Deposit to exchange
+  withdrawal  // Withdrawal from exchange
+  fee         // Trading fee, withdrawal fee, etc.
+  transfer    // Transfer between exchanges (future)
+}
+
+Enum asset_source {
+  exchange    // Synced from connected exchange
+  manual      // Manually entered by user
+}
+
+Enum storage_type {
+  hardware_wallet   // Ledger, Trezor, etc.
+  software_wallet   // MetaMask, Trust Wallet, etc.
+  paper_wallet      // Paper wallet
+  cold_storage      // Cold storage (USB, offline)
+  other_exchange    // Exchange not connected to platform
+  custodial         // Third-party custodian
+  other             // Other storage type
+}
+
+Enum price_alert_type {
+  crosses_above     // Price crosses above target
+  crosses_below     // Price crosses below target
+  change_percent    // Price changes by X% within period
+}
+
+Enum price_alert_status {
+  active            // Alert is active and monitoring
+  triggered         // Alert was triggered, waiting for cooldown
+  paused            // User paused the alert
+  expired           // Alert expired (if expiration set)
+}
+
+Enum snapshot_status {
+  complete    // Successfully captured all data
+  partial     // Some exchanges failed to respond
+  failed      // Snapshot failed completely
+}
+
+// Portfolio Snapshots (Hourly)
+Table portfolio_snapshots {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+  
+  // Snapshot timing
+  snapshot_timestamp timestamptz [not null, note: 'When snapshot was taken']
+  
+  // Aggregated portfolio values
+  total_value_usd decimal(20, 8) [not null]
+  realized_pnl decimal(20, 8) [not null, default: 0]
+  unrealized_pnl decimal(20, 8) [not null, default: 0]
+  total_pnl decimal(20, 8) [not null, default: 0]
+  
+  // Portfolio composition
+  asset_count int [not null, default: 0]
+  exchange_count int [not null, default: 0]
+  
+  // Snapshot data (detailed breakdown)
+  snapshot_data jsonb [not null, note: 'Full portfolio state: assets, exchanges, balances']
+  
+  // Snapshot quality
+  status snapshot_status [not null, default: 'complete']
+  exchanges_included varchar(200) [null, note: 'Comma-separated list: bybit,binance']
+  exchanges_failed varchar(200) [null, note: 'Exchanges that failed during snapshot']
+  
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+  
+  Indexes {
+    user_id
+    snapshot_timestamp
+    (user_id, snapshot_timestamp) [unique, note: 'One snapshot per user per hour']
+    status
+    created_at
+  }
+  
+  Note: '''
+  Hourly snapshots for portfolio tracking and chart generation.
+  Snapshot data JSONB structure:
+  {
+    "total_value_usd": 10000.00,
+    "exchanges": [
+      {
+        "exchange": "bybit",
+        "total_value_usd": 6000.00,
+        "assets": [
+          {"symbol": "BTC", "amount": 0.15, "value_usd": 4500.00, "price_usd": 30000.00},
+          {"symbol": "ETH", "amount": 1.0, "value_usd": 1500.00, "price_usd": 1500.00}
+        ]
+      },
+      {
+        "exchange": "binance",
+        "total_value_usd": 4000.00,
+        "assets": [
+          {"symbol": "USDT", "amount": 4000.00, "value_usd": 4000.00, "price_usd": 1.00}
+        ]
+      }
+    ]
+  }
+  
+  Retention: Keep snapshots for 2 years, archive older data
+  '''
+}
+
+// Transactions History
+Table transactions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+  
+  // Transaction identification
+  exchange varchar(50) [not null, note: 'bybit, binance']
+  exchange_transaction_id varchar(255) [null, note: 'Transaction ID from exchange']
+  
+  // Transaction details
+  transaction_type transaction_type [not null]
+  asset varchar(50) [not null, note: 'BTC, ETH, USDT, etc.']
+  
+  // Amounts
+  amount decimal(30, 8) [not null, note: 'Quantity of asset']
+  price_usd decimal(20, 8) [null, note: 'Price per unit in USD at time of transaction']
+  value_usd decimal(20, 8) [not null, note: 'Total value in USD']
+  
+  // Fee information
+  fee_amount decimal(30, 8) [null, note: 'Fee amount in fee asset']
+  fee_asset varchar(50) [null, note: 'Asset used for fee (e.g., BNB)']
+  fee_usd decimal(20, 8) [null, note: 'Fee value in USD']
+  
+  // For trades: additional details
+  trade_pair varchar(50) [null, note: 'BTCUSDT, ETHBTC, etc. - only for trades']
+  side varchar(10) [null, note: 'buy or sell - only for trades']
+  
+  // Timing
+  transaction_timestamp timestamptz [not null, note: 'When transaction occurred on exchange']
+  
+  // Metadata
+  synced_at timestamptz [not null, default: `now()`, note: 'When we pulled this from exchange']
+  notes text [null, note: 'Additional notes or metadata']
+  
+  Indexes {
+    user_id
+    exchange
+    transaction_type
+    asset
+    transaction_timestamp
+    (user_id, transaction_timestamp)
+    (user_id, exchange, exchange_transaction_id) [unique, note: 'Prevent duplicate imports']
+  }
+  
+  Note: '''
+  Stores all portfolio transactions pulled from connected exchanges.
+  Used for:
+  - Realized P&L calculations (cost basis tracking)
+  - Transaction history display
+  - Tax reporting (future)
+  
+  Synced periodically from exchange APIs.
+  '''
+}
+
+// Portfolio Aggregation Cache (Current State)
+Table portfolio_current_state {
+  user_id uuid [pk, note: 'Reference to users.id in user_db']
+  
+  // Current portfolio values (cached)
+  total_value_usd decimal(20, 8) [not null]
+  realized_pnl decimal(20, 8) [not null, default: 0]
+  unrealized_pnl decimal(20, 8) [not null, default: 0]
+  total_pnl decimal(20, 8) [not null, default: 0]
+  
+  // Current composition
+  asset_count int [not null, default: 0]
+  exchange_count int [not null, default: 0]
+  
+  // Current holdings (detailed breakdown)
+  holdings_data jsonb [not null, note: 'Current assets across exchanges']
+  
+  // Cache metadata
+  last_updated_at timestamptz [not null, default: `now()`]
+  
+  Indexes {
+    last_updated_at
+  }
+  
+  Note: '''
+  Cache of current portfolio state for fast API responses.
+  Updated when:
+  - User manually refreshes portfolio
+  - Scheduled background refresh (every 5-15 minutes)
+  - After snapshot creation
+  
+  This avoids recalculating from broker APIs on every request.
+  TTL: 5-15 minutes
+  '''
+}
+
+// Risk Metrics Cache
+Table risk_metrics_cache {
+  user_id uuid [pk, note: 'Reference to users.id in user_db']
+  
+  // Drawdown metrics
+  max_drawdown decimal(10, 4) [null, note: 'Maximum drawdown percentage']
+  current_drawdown decimal(10, 4) [null, note: 'Current drawdown from peak']
+  peak_value_usd decimal(20, 8) [null]
+  peak_timestamp timestamptz [null]
+  valley_value_usd decimal(20, 8) [null]
+  valley_timestamp timestamptz [null]
+  
+  // Volatility metrics
+  volatility decimal(10, 4) [null, note: 'Portfolio volatility (standard deviation of returns)']
+  sharpe_ratio decimal(10, 4) [null, note: 'Risk-adjusted return metric']
+  
+  // Performance extremes
+  best_day_return decimal(10, 4) [null, note: 'Best single day return percentage']
+  best_day_timestamp timestamptz [null]
+  worst_day_return decimal(10, 4) [null, note: 'Worst single day return percentage']
+  worst_day_timestamp timestamptz [null]
+  
+  // Calculation metadata
+  calculated_at timestamptz [not null, default: `now()`]
+  calculation_period_days int [not null, note: 'Number of days used in calculation']
+  
+  Indexes {
+    calculated_at
+  }
+  
+  Note: '''
+  Cached risk metrics calculated from portfolio snapshots.
+  Expensive to calculate, so cached and refreshed daily.
+  Calculation requires historical snapshots (typically 30-90 days).
+  '''
+}
+
+// Asset Cost Basis Tracking
+Table asset_cost_basis {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+  
+  // Asset identification
+  exchange varchar(50) [not null]
+  asset varchar(50) [not null]
+  
+  // Cost basis calculation
+  total_amount decimal(30, 8) [not null, note: 'Current holding amount']
+  average_cost_basis decimal(20, 8) [not null, note: 'Average cost per unit in USD']
+  total_cost_usd decimal(20, 8) [not null, note: 'Total invested in USD']
+  
+  // Realized P&L from this asset
+  realized_pnl decimal(20, 8) [not null, default: 0]
+  
+  // Metadata
+  last_transaction_at timestamptz [null, note: 'Last transaction affecting this asset']
+  updated_at timestamptz [not null, default: `now()`]
+  
+  Indexes {
+    user_id
+    (user_id, exchange, asset) [unique]
+    exchange
+    asset
+  }
+  
+  Note: '''
+  Tracks cost basis for each asset using FIFO method.
+  Used for:
+  - Unrealized P&L calculation: (current_price - avg_cost_basis) * amount
+  - Realized P&L calculation when selling
+  
+  Updated whenever transactions are synced.
+  '''
+}
+
+// Notification Preferences for Portfolio Alerts
+Table portfolio_alert_preferences {
+  user_id uuid [pk, note: 'Reference to users.id in user_db']
+
+  // Drawdown alerts
+  enable_drawdown_alerts boolean [default: true]
+  drawdown_alert_threshold decimal(10, 4) [default: 10.00, note: 'Alert when drawdown exceeds this %']
+
+  // Portfolio value change alerts (e.g., 10% change in 24h)
+  enable_value_change_alerts boolean [default: true]
+  value_change_threshold_percent decimal(10, 4) [default: 10.00, note: 'Alert when portfolio changes by this % within period']
+  value_change_period varchar(10) [default: '24h', note: 'Period for change calculation: 1h, 24h, 7d']
+
+  // Absolute value alerts
+  enable_value_alerts boolean [default: false]
+  value_alert_threshold_usd decimal(20, 8) [null, note: 'Alert when portfolio drops below this value']
+
+  // Daily summary
+  enable_daily_summary boolean [default: false]
+  daily_summary_time time [default: '09:00:00', note: 'Time to send daily summary']
+
+  // Alert channels
+  alert_via_email boolean [default: true]
+  alert_via_in_app boolean [default: true]
+  alert_via_push boolean [default: false]
+
+  // Cooldown to prevent alert spam
+  alert_cooldown_hours int [default: 24, note: 'Hours to wait before sending same alert type again']
+  last_drawdown_alert_at timestamptz [null]
+  last_value_change_alert_at timestamptz [null]
+  last_value_alert_at timestamptz [null]
+
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Note: '''
+  User preferences for portfolio-related notifications.
+
+  value_change_period options:
+  - "1h": Compare to value 1 hour ago
+  - "24h": Compare to value 24 hours ago (default)
+  - "7d": Compare to value 7 days ago
+
+  Cooldown prevents alert spam - same alert type won't fire
+  until cooldown_hours have passed.
+  '''
+}
+
+// Portfolio Sync Log (for debugging and monitoring)
+Table portfolio_sync_logs {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+  
+  // Sync details
+  sync_type varchar(50) [not null, note: 'snapshot, transaction_sync, full_refresh']
+  sync_started_at timestamptz [not null]
+  sync_completed_at timestamptz [null]
+  duration_ms int [null]
+  
+  // Results
+  success boolean [not null]
+  exchanges_synced varchar(200) [null, note: 'Successfully synced exchanges']
+  exchanges_failed varchar(200) [null, note: 'Failed exchanges']
+  error_message text [null]
+  
+  // Data synced
+  snapshots_created int [default: 0]
+  transactions_imported int [default: 0]
+  
+  Indexes {
+    user_id
+    sync_started_at
+    (user_id, sync_started_at)
+    success
+  }
+  
+  Note: 'Retention: Keep logs for 90 days'
+}
+
+// Manual Assets (user-entered assets not on connected exchanges)
+Table manual_assets {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+
+  // Asset identification
+  asset varchar(50) [not null, note: 'Asset symbol: BTC, ETH, etc.']
+  asset_name varchar(100) [null, note: 'User-friendly name for display']
+
+  // Holdings
+  amount decimal(30, 8) [not null, note: 'Current holding amount']
+
+  // Cost basis (for P&L calculation)
+  purchase_price_usd decimal(20, 8) [null, note: 'Price per unit when acquired']
+  purchase_date date [null, note: 'When the asset was acquired']
+  total_cost_usd decimal(20, 8) [null, note: 'Total cost = amount * purchase_price_usd']
+
+  // Storage information
+  storage_type storage_type [not null, default: 'other']
+  storage_location varchar(200) [null, note: 'Description: "Ledger Nano X", "Paper wallet in safe", etc.']
+  wallet_address varchar(255) [null, note: 'Optional: wallet address for reference']
+
+  // Notes
+  notes text [null, note: 'Additional notes about this asset holding']
+
+  // Audit fields
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    user_id
+    asset
+    (user_id, asset, storage_location) [note: 'User might have same asset in multiple locations']
+    storage_type
+    created_at
+  }
+
+  Note: '''
+  Stores manually entered assets that are not on connected exchanges.
+  Examples:
+  - Bitcoin on a hardware wallet (Ledger, Trezor)
+  - Crypto on an exchange not supported by the platform
+  - Paper wallets or cold storage
+
+  Used for:
+  - Complete portfolio valuation (exchange + manual assets)
+  - P&L calculation using purchase_price_usd as cost basis
+
+  User can have multiple entries for the same asset in different locations:
+  - 1 BTC on Ledger Nano X
+  - 0.5 BTC on paper wallet in bank safe
+  '''
+}
+
+// Manual Asset Value History (for tracking value over time)
+Table manual_asset_value_history {
+  id uuid [pk, default: `gen_random_uuid()`]
+  manual_asset_id uuid [not null, ref: > manual_assets.id]
+
+  // Value at snapshot time
+  amount decimal(30, 8) [not null, note: 'Amount at time of snapshot']
+  price_usd decimal(20, 8) [not null, note: 'Price per unit at snapshot time']
+  value_usd decimal(20, 8) [not null, note: 'Total value = amount * price_usd']
+
+  // Snapshot timing
+  snapshot_timestamp timestamptz [not null]
+
+  Indexes {
+    manual_asset_id
+    snapshot_timestamp
+    (manual_asset_id, snapshot_timestamp) [unique]
+  }
+
+  Note: '''
+  Tracks value history for manual assets (used in portfolio snapshots).
+  Created during hourly snapshot process.
+  Retention: Same as portfolio_snapshots (2 years)
+  '''
+}
+
+// User Session Tracking (for smart transaction sync)
+Table user_sessions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+
+  // Session state
+  is_active boolean [not null, default: true]
+  last_activity_at timestamptz [not null, default: `now()`]
+
+  // Connection info
+  session_token_hash varchar(255) [null, note: 'Hash of session token for identification']
+  device_type varchar(50) [null, note: 'web, mobile, api']
+
+  // Sync tracking
+  last_transaction_sync_at timestamptz [null, note: 'Last time transactions were synced for this session']
+
+  // Timestamps
+  started_at timestamptz [not null, default: `now()`]
+  ended_at timestamptz [null]
+
+  Indexes {
+    user_id
+    is_active
+    last_activity_at
+    (user_id, is_active)
+  }
+
+  Note: '''
+  Tracks active user sessions for smart sync triggering.
+  Transaction sync only runs when user has active session.
+
+  Session becomes inactive after 15 minutes of no activity.
+  Sync interval while active: every 5 minutes.
+  '''
+}
+
+// Price Alerts (user-defined price triggers)
+Table price_alerts {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+
+  // Asset to monitor
+  asset varchar(50) [not null, note: 'Asset symbol: BTC, ETH, etc.']
+
+  // Alert configuration
+  alert_type price_alert_type [not null]
+  target_value decimal(20, 8) [not null, note: 'Target price or percentage depending on alert_type']
+  comparison_period varchar(10) [null, note: 'For change_percent: 1h, 24h, 7d']
+
+  // Alert state
+  status price_alert_status [not null, default: 'active']
+  is_recurring boolean [default: false, note: 'If true, alert resets after triggering']
+
+  // Trigger tracking
+  triggered_count int [default: 0, note: 'Number of times this alert has triggered']
+  last_triggered_at timestamptz [null]
+  last_triggered_price decimal(20, 8) [null, note: 'Price when alert was triggered']
+
+  // Cooldown (to prevent spam)
+  cooldown_hours int [default: 24, note: 'Hours to wait before re-triggering (for recurring)']
+
+  // Notification channels
+  notify_email boolean [default: true]
+  notify_in_app boolean [default: true]
+  notify_push boolean [default: false]
+
+  // Optional: Expiration
+  expires_at timestamptz [null, note: 'Alert expires after this time (optional)']
+
+  // User notes
+  notes varchar(500) [null, note: 'User notes about this alert']
+
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    user_id
+    asset
+    status
+    (user_id, status)
+    (asset, status) [note: 'For efficient batch checking of all alerts for an asset']
+    alert_type
+    expires_at
+    created_at
+  }
+
+  Note: '''
+  User-defined price alerts for individual assets.
+
+  Alert Types:
+  - crosses_above: Notify when price goes above target_value (USD)
+  - crosses_below: Notify when price goes below target_value (USD)
+  - change_percent: Notify when price changes by target_value % within comparison_period
+
+  Examples:
+  - "Alert me when BTC crosses above $50,000"
+    → alert_type: crosses_above, target_value: 50000
+
+  - "Alert me when ETH drops below $2,000"
+    → alert_type: crosses_below, target_value: 2000
+
+  - "Alert me when SOL moves 10% in 24 hours"
+    → alert_type: change_percent, target_value: 10, comparison_period: "24h"
+
+  Recurring alerts:
+  - One-time (default): Alert triggers once, then status → triggered
+  - Recurring: After cooldown, status returns to active
+
+  Checked by scheduled job every minute during market hours.
+  '''
+}
+
+// Price Alert History (for audit and analytics)
+Table price_alert_history {
+  id uuid [pk, default: `gen_random_uuid()`]
+  alert_id uuid [not null, ref: > price_alerts.id]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+
+  // Trigger details
+  triggered_at timestamptz [not null]
+  trigger_price decimal(20, 8) [not null, note: 'Price that triggered the alert']
+
+  // For change_percent alerts
+  comparison_price decimal(20, 8) [null, note: 'Price from comparison_period ago']
+  actual_change_percent decimal(10, 4) [null]
+
+  // Notification delivery
+  email_sent boolean [default: false]
+  in_app_sent boolean [default: false]
+  push_sent boolean [default: false]
+
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    alert_id
+    user_id
+    triggered_at
+    (user_id, triggered_at)
+  }
+
+  Note: '''
+  History of price alert triggers for audit and analytics.
+  Created each time a price_alert is triggered.
+  Retention: 1 year
+  '''
+}

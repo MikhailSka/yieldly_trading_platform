@@ -1,0 +1,680 @@
+classDiagram
+    %% Broker Connectivity Service - Controllers
+    class BrokerController {
+        -connectionManager: ConnectionManager
+        -bybitAdapter: BybitAdapter
+        -binanceAdapter: BinanceAdapter
+        +AddConnection(request: AddConnectionRequest) ConnectionResponse
+        +RemoveConnection(connectionID: UUID) void
+        +GetConnections(userID: UUID, page: int, pageSize: int) PaginatedConnectionResponse
+        +GetConnectionStatus(connectionID: UUID) ConnectionStatusResponse
+        +TestConnection(connectionID: UUID) TestResult
+        +ValidateAndDetectCapabilities(connectionID: UUID) CapabilityDetectionResult
+        +UpdateConnection(connectionID: UUID, request: UpdateConnectionRequest) ConnectionResponse
+        +GetPortfolioData(broker: string, connectionID: UUID) PortfolioDataResponse
+        -selectAdapter(broker: string) IBrokerAdapter
+    }
+
+    class MarketDataController {
+        -webSocketManager: WebSocketManager
+        -bybitAdapter: BybitAdapter
+        -binanceAdapter: BinanceAdapter
+        -configManager: ExchangeConfigManager
+        +GetMarketData(exchange: string, symbol: string, type: string, interval: string, limit: int) MarketDataResponse
+        +GetTradingPairs(exchange: string, filters: TradingPairFilters) PaginatedTradingPairResponse
+        +GetBatchPrices(exchange: string, symbols: List~string~) BatchPriceResponse
+        +GetExchangeConfiguration(exchange: string) ExchangeConfigResponse
+        -selectAdapter(exchange: string) IBrokerAdapter
+    }
+
+    class WebSocketManager {
+        -connections: Map~string,WebSocketConnection~
+        -subscriptions: Map~string,Set~string~~
+        -redis: RedisClient
+        -bybitStream: BybitWebSocketAdapter
+        -binanceStream: BinanceWebSocketAdapter
+        +HandleConnection(token: string) WebSocketConnection
+        +Subscribe(connectionID: string, channel: string, exchange: string, symbols: List~string~) void
+        +Unsubscribe(connectionID: string, channel: string, exchange: string, symbols: List~string~) void
+        +BroadcastToSubscribers(exchange: string, symbol: string, data: MarketData) void
+        -registerConnection(connectionID: string, userID: UUID) void
+        -cleanupConnection(connectionID: string) void
+        -connectToExchange(exchange: string) void
+    }
+
+    class ExchangeConfigManager {
+        -repository: IBrokerRepository
+        -cache: ICacheManager
+        +GetConfiguration(exchange: string) ExchangeConfiguration
+        +UpdateConfiguration(exchange: string, config: ExchangeConfiguration) ExchangeConfiguration
+        +ListConfigurations() List~ExchangeConfiguration~
+        -invalidateCache(exchange: string) void
+    }
+
+    %% Broker Connectivity Service - Core Logic
+    class ConnectionManager {
+        -repository: IBrokerRepository
+        -credentialManager: CredentialManager
+        -capabilityDetector: CapabilityDetector
+        -bybitAdapter: BybitAdapter
+        -binanceAdapter: BinanceAdapter
+        +Create(userID: UUID, connection: BrokerConnection) BrokerConnection
+        +Delete(connectionID: UUID) error
+        +GetByID(connectionID: UUID) BrokerConnection
+        +GetByUserID(userID: UUID) List~BrokerConnection~
+        +TestConnection(connectionID: UUID) TestResult
+        +CheckHealth(connectionID: UUID) HealthStatus
+        +DetectCapabilities(connectionID: UUID) APICapabilities
+        -validateReadOnlyKeys(apiKey: string, apiSecret: string, broker: string) error
+        -scheduleHealthChecks(connectionID: UUID) void
+    }
+
+    class CredentialManager {
+        -keyVault: AzureKeyVaultClient
+        -encryptionKey: string
+        +Store(connectionID: UUID, apiKey: string, apiSecret: string) string
+        +Retrieve(keyReference: string) Credentials
+        +Delete(keyReference: string) error
+        +RotateKey(keyReference: string, newApiKey: string, newApiSecret: string) error
+        -encrypt(data: string) string
+        -decrypt(data: string) string
+        -generateKeyReference() string
+    }
+
+    class CapabilityDetector {
+        -bybitAdapter: BybitAdapter
+        -binanceAdapter: BinanceAdapter
+        +DetectCapabilities(broker: string, credentials: Credentials) APICapabilities
+        -testPortfolioAccess(adapter: IBrokerAdapter, credentials: Credentials) bool
+        -testMarketDataAccess(adapter: IBrokerAdapter, credentials: Credentials) bool
+        -testHistoricalDataAccess(adapter: IBrokerAdapter, credentials: Credentials) bool
+        -testTradingPermission(adapter: IBrokerAdapter, credentials: Credentials) bool
+        -testWithdrawalPermission(adapter: IBrokerAdapter, credentials: Credentials) bool
+        -buildCapabilitiesResult(testResults: Map~string,TestResult~) APICapabilities
+    }
+
+    %% Broker Adapters - Interface
+    class IBrokerAdapter {
+        <<interface>>
+        +GetAccountInfo(credentials: Credentials) AccountInfo
+        +GetPortfolioBalance(credentials: Credentials) List~Balance~
+        +GetHistoricalOHLCV(symbol: string, interval: string, startTime: Time?, endTime: Time?, limit: int) List~OHLCV~
+        +GetTicker(symbol: string) TickerData
+        +GetBatchTickers(symbols: List~string~) Map~string,TickerData~
+        +GetTradingPairs(filters: TradingPairFilters) List~TradingPair~
+        +TestConnection(credentials: Credentials) TestResult
+        +TestEndpoint(credentials: Credentials, endpoint: string, method: string) EndpointTestResult
+        +GetRateLimits() RateLimitConfig
+    }
+
+    class IWebSocketAdapter {
+        <<interface>>
+        +Connect() error
+        +Disconnect() error
+        +SubscribeTicker(symbols: List~string~) error
+        +SubscribeKline(symbols: List~string~, interval: string) error
+        +Unsubscribe(symbols: List~string~) error
+        +OnMessage(handler: MessageHandler) void
+        +SendPing() void
+    }
+
+    class BybitWebSocketAdapter {
+        -wsConn: WebSocketConnection
+        -baseURL: string
+        -pingInterval: Duration
+        +Connect() error
+        +Disconnect() error
+        +SubscribeTicker(symbols: List~string~) error
+        +SubscribeKline(symbols: List~string~, interval: string) error
+        +Unsubscribe(symbols: List~string~) error
+        +OnMessage(handler: MessageHandler) void
+        +SendPing() void
+        -handleReconnect() void
+        -parseMessage(data: bytes) MarketData
+    }
+
+    class BinanceWebSocketAdapter {
+        -wsConn: WebSocketConnection
+        -baseURL: string
+        -pingInterval: Duration
+        +Connect() error
+        +Disconnect() error
+        +SubscribeTicker(symbols: List~string~) error
+        +SubscribeKline(symbols: List~string~, interval: string) error
+        +Unsubscribe(symbols: List~string~) error
+        +OnMessage(handler: MessageHandler) void
+        +SendPing() void
+        -handleReconnect() void
+        -parseMessage(data: bytes) MarketData
+    }
+
+    class BybitAdapter {
+        -httpClient: HTTPClient
+        -baseURL: string
+        -rateLimiter: RateLimiter
+        +GetAccountInfo(credentials: Credentials) AccountInfo
+        +GetPortfolioBalance(credentials: Credentials) List~Balance~
+        +GetHistoricalOHLCV(symbol: string, interval: string, startTime: Time?, endTime: Time?) List~OHLCV~
+        +GetTradingPairs() List~TradingPair~
+        +TestConnection(credentials: Credentials) TestResult
+        +TestEndpoint(credentials: Credentials, endpoint: string, method: string) EndpointTestResult
+        +GetRateLimits() RateLimitConfig
+        -buildRequest(endpoint: string, params: Map) HTTPRequest
+        -signRequest(request: HTTPRequest, credentials: Credentials) HTTPRequest
+        -handleResponse(response: HTTPResponse) Result
+    }
+
+    class BinanceAdapter {
+        -httpClient: HTTPClient
+        -baseURL: string
+        -rateLimiter: RateLimiter
+        +GetAccountInfo(credentials: Credentials) AccountInfo
+        +GetPortfolioBalance(credentials: Credentials) List~Balance~
+        +GetHistoricalOHLCV(symbol: string, interval: string, startTime: Time?, endTime: Time?) List~OHLCV~
+        +GetTradingPairs() List~TradingPair~
+        +TestConnection(credentials: Credentials) TestResult
+        +TestEndpoint(credentials: Credentials, endpoint: string, method: string) EndpointTestResult
+        +GetRateLimits() RateLimitConfig
+        -buildRequest(endpoint: string, params: Map) HTTPRequest
+        -signRequest(request: HTTPRequest, credentials: Credentials) HTTPRequest
+        -handleResponse(response: HTTPResponse) Result
+        -calculateWeight(endpoint: string) int
+    }
+
+    %% Rate Limiter
+    class RateLimiter {
+        -redis: RedisClient
+        -limits: Map~string,RateLimitConfig~
+        +CheckLimit(key: string, broker: string, endpoint: string) bool
+        +IncrementUsage(key: string, broker: string, endpoint: string) error
+        +GetUsage(key: string, broker: string) UsageStats
+        +ResetLimit(key: string, broker: string) error
+        -getLimit(broker: string, endpoint: string) RateLimitConfig
+        -buildKey(key: string, broker: string, endpoint: string) string
+    }
+
+    %% Broker Repository
+    class IBrokerRepository {
+        <<interface>>
+        +Save(connection: BrokerConnection) error
+        +Update(connection: BrokerConnection) error
+        +Delete(connectionID: UUID) error
+        +FindByID(connectionID: UUID) BrokerConnection
+        +FindByUserID(userID: UUID) List~BrokerConnection~
+        +FindByUserAndBroker(userID: UUID, broker: string) BrokerConnection
+        +SaveCapabilities(connectionID: UUID, capabilities: APICapabilities) error
+    }
+
+    class BrokerRepository {
+        -db: Database
+        +Save(connection: BrokerConnection) error
+        +Update(connection: BrokerConnection) error
+        +Delete(connectionID: UUID) error
+        +FindByID(connectionID: UUID) BrokerConnection
+        +FindByUserID(userID: UUID) List~BrokerConnection~
+        +FindByUserAndBroker(userID: UUID, broker: string) BrokerConnection
+        +SaveCapabilities(connectionID: UUID, capabilities: APICapabilities) error
+        -toModel(row: DatabaseRow) BrokerConnection
+        -fromModel(connection: BrokerConnection) DatabaseRow
+    }
+
+    %% Portfolio Service - Controller
+    class PortfolioController {
+        -aggregator: PortfolioAggregator
+        -chartGenerator: ChartGenerator
+        -repository: IPortfolioRepository
+        +GetPortfolio(userID: UUID) PortfolioResponse
+        +GetAssetBreakdown(userID: UUID) AssetBreakdownResponse
+        +GetTransactions(userID: UUID, filters: TransactionFilters) PaginatedTransactionResponse
+        +GetPerformance(userID: UUID, period: string) PerformanceResponse
+        +GetPnL(userID: UUID) PnLResponse
+        +GetRiskMetrics(userID: UUID) RiskMetricsResponse
+        +GetCharts(userID: UUID, period: string) ChartDataResponse
+        +GetHistory(userID: UUID, from: Time, to: Time, interval: string) HistoryResponse
+        +RefreshPortfolio(userID: UUID) PortfolioResponse
+    }
+
+    %% Portfolio Service - Core Logic
+    class PortfolioAggregator {
+        -brokerClient: BrokerServiceClient
+        -pnlCalculator: PnLCalculator
+        -riskAnalyzer: RiskAnalyzer
+        -cacheManager: ICacheManager
+        -notificationPublisher: NotificationPublisher
+        +AggregatePortfolio(userID: UUID, connections: List~BrokerConnection~) Portfolio
+        +GetCurrentState(userID: UUID) Portfolio
+        -fetchFromBroker(connection: BrokerConnection) ExchangePortfolio
+        -normalizeAssets(portfolios: List~ExchangePortfolio~) List~Asset~
+        -calculateTotalValue(assets: List~Asset~) float
+    }
+
+    class BrokerServiceClient {
+        -httpClient: HTTPClient
+        -baseURL: string
+        -timeout: Duration
+        +GetPortfolioData(broker: string, connectionID: UUID) PortfolioData
+        +GetHistoricalData(broker: string, symbol: string, interval: string, from: Time?, to: Time?) List~OHLCV~
+        -buildRequest(endpoint: string, params: Map) HTTPRequest
+        -handleResponse(response: HTTPResponse) Result
+    }
+
+    class PnLCalculator {
+        -repository: IPortfolioRepository
+        +CalculateRealized(transactions: List~Transaction~) float
+        +CalculateUnrealized(assets: List~Asset~, currentPrices: Map~string,float~) float
+        +CalculateTotalPnL(portfolio: Portfolio) PnLResult
+        -getCostBasis(asset: Asset, transactions: List~Transaction~) float
+        -getAverageEntryPrice(transactions: List~Transaction~) float
+    }
+
+    class RiskAnalyzer {
+        -repository: IPortfolioRepository
+        +CalculateDrawdown(snapshots: List~PortfolioSnapshot~) DrawdownResult
+        +CalculateVolatility(snapshots: List~PortfolioSnapshot~) float
+        +CalculateSharpeRatio(snapshots: List~PortfolioSnapshot~, riskFreeRate: float) float
+        +AnalyzeRisk(portfolio: Portfolio, snapshots: List~PortfolioSnapshot~) RiskMetrics
+        -calculateReturns(snapshots: List~PortfolioSnapshot~) List~float~
+        -findPeakValue(snapshots: List~PortfolioSnapshot~) float
+    }
+
+    class ChartGenerator {
+        -repository: IPortfolioRepository
+        +GenerateEquityCurve(userID: UUID, period: string) ChartData
+        +GenerateAllocationChart(portfolio: Portfolio) ChartData
+        +GeneratePerformanceChart(snapshots: List~PortfolioSnapshot~, period: string) ChartData
+        -querySnapshots(userID: UUID, from: Time, to: Time) List~PortfolioSnapshot~
+        -formatForFrontend(data: any) ChartData
+    }
+
+    class SnapshotScheduler {
+        -aggregator: PortfolioAggregator
+        -repository: IPortfolioRepository
+        -ticker: Ticker
+        +Start() void
+        +Stop() void
+        -createSnapshot(userID: UUID) error
+        -cleanupOldSnapshots() error
+    }
+
+    class NotificationPublisher {
+        -serviceBus: ServiceBusClient
+        +PublishDrawdownAlert(userID: UUID, drawdown: float) error
+        +PublishMilestoneReached(userID: UUID, milestone: string) error
+        -buildMessage(event: Event) Message
+    }
+
+    %% Portfolio Repository
+    class IPortfolioRepository {
+        <<interface>>
+        +SaveSnapshot(snapshot: PortfolioSnapshot) error
+        +GetSnapshots(userID: UUID, from: Time, to: Time) List~PortfolioSnapshot~
+        +GetLatestSnapshot(userID: UUID) PortfolioSnapshot
+        +SaveTransaction(transaction: Transaction) error
+        +GetTransactions(userID: UUID, filters: TransactionFilters) List~Transaction~
+        +CleanupOldSnapshots(before: Time) error
+    }
+
+    class PortfolioRepository {
+        -db: Database
+        +SaveSnapshot(snapshot: PortfolioSnapshot) error
+        +GetSnapshots(userID: UUID, from: Time, to: Time) List~PortfolioSnapshot~
+        +GetLatestSnapshot(userID: UUID) PortfolioSnapshot
+        +SaveTransaction(transaction: Transaction) error
+        +GetTransactions(userID: UUID, filters: TransactionFilters) List~Transaction~
+        +CleanupOldSnapshots(before: Time) error
+        -toModel(row: DatabaseRow) PortfolioSnapshot
+        -fromModel(snapshot: PortfolioSnapshot) DatabaseRow
+    }
+
+    %% Cache Manager
+    class ICacheManager {
+        <<interface>>
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+        +Exists(key: string) bool
+    }
+
+    class CacheManager {
+        -redis: RedisClient
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+        +Exists(key: string) bool
+        -buildKey(prefix: string, identifier: string) string
+        -serialize(data: any) string
+        -deserialize(data: string) any
+    }
+
+    %% Domain Models - Broker Service
+    class BrokerConnection {
+        +ConnectionID: UUID
+        +UserID: UUID
+        +BrokerType: string
+        +ConnectionName: string
+        +APIKeyReference: string
+        +Status: ConnectionStatus
+        +DetectedCapabilities: APICapabilities
+        +CapabilitiesDetectedAt: Time
+        +LastHealthCheck: Time
+        +CreatedAt: Time
+        +UpdatedAt: Time
+        +IsHealthy() bool
+        +HasCapability(capability: string) bool
+    }
+
+    class Credentials {
+        +APIKey: string
+        +APISecret: string
+    }
+
+    class APICapabilities {
+        +PortfolioRead: bool
+        +MarketDataRead: bool
+        +HistoricalDataRead: bool
+        +Trading: bool
+        +Withdrawal: bool
+        +DetectedAt: Time
+        +TestResults: Map~string,EndpointTestResult~
+        +HasAnyReadPermission() bool
+        +HasDangerousPermissions() bool
+    }
+
+    class EndpointTestResult {
+        +Endpoint: string
+        +Method: string
+        +Success: bool
+        +StatusCode: int
+        +ErrorMessage: string
+        +ResponseTime: Duration
+    }
+
+    class AccountInfo {
+        +AccountID: string
+        +AccountType: string
+        +Balances: List~Balance~
+        +Permissions: List~string~
+    }
+
+    class Balance {
+        +Asset: string
+        +Free: float
+        +Locked: float
+        +Total: float
+    }
+
+    class OHLCV {
+        +Timestamp: Time
+        +Open: float
+        +High: float
+        +Low: float
+        +Close: float
+        +Volume: float
+    }
+
+    class TradingPair {
+        +Symbol: string
+        +BaseAsset: string
+        +QuoteAsset: string
+        +Status: string
+        +MinQuantity: float
+        +MaxQuantity: float
+        +PricePrecision: int
+        +QuantityPrecision: int
+        +Volume24hUsd: float
+        +PriceChange24hPct: float
+        +IsTrending: bool
+        +TrendingReason: string
+    }
+
+    class TradingPairFilters {
+        +Search: string
+        +QuoteAsset: string
+        +BaseAsset: string
+        +IsActive: bool
+        +IsTrending: bool
+        +MinVolume24h: float
+        +SortBy: string
+        +SortOrder: string
+        +Page: int
+        +PageSize: int
+    }
+
+    class TickerData {
+        +Symbol: string
+        +LastPrice: float
+        +BidPrice: float
+        +AskPrice: float
+        +Volume24h: float
+        +QuoteVolume24h: float
+        +PriceChange24h: float
+        +PriceChange24hPct: float
+        +High24h: float
+        +Low24h: float
+        +Timestamp: Time
+    }
+
+    class MarketData {
+        +Type: string
+        +Exchange: string
+        +Symbol: string
+        +Data: any
+        +Timestamp: Time
+    }
+
+    class ExchangeConfiguration {
+        +Exchange: string
+        +RestBaseUrl: string
+        +WebSocketBaseUrl: string
+        +MaxKlinesPerRequest: int
+        +MaxSymbolsPerWebSocket: int
+        +SupportedIntervals: List~string~
+        +RateLimitRequestsPerMinute: int
+        +ConnectionTimeoutMs: int
+        +RequestTimeoutMs: int
+        +WebSocketPingIntervalMs: int
+        +MaintenanceWindows: List~MaintenanceWindow~
+        +IsActive: bool
+        +LastUpdatedAt: Time
+    }
+
+    class RateLimitConfig {
+        +RequestsPerMinute: int
+        +Weight: int
+        +BurstLimit: int
+    }
+
+    %% Domain Models - Portfolio Service
+    class Portfolio {
+        +UserID: UUID
+        +TotalValueUSD: float
+        +RealizedPnL: float
+        +UnrealizedPnL: float
+        +Assets: List~Asset~
+        +Exchanges: List~ExchangeInfo~
+        +LastUpdated: Time
+    }
+
+    class Asset {
+        +Symbol: string
+        +Amount: float
+        +ValueUSD: float
+        +Exchange: string
+        +CostBasis: float
+        +UnrealizedPnL: float
+    }
+
+    class ExchangePortfolio {
+        +Exchange: string
+        +Balances: List~Balance~
+        +TotalValueUSD: float
+    }
+
+    class PortfolioSnapshot {
+        +SnapshotID: UUID
+        +UserID: UUID
+        +Timestamp: Time
+        +TotalValueUSD: float
+        +RealizedPnL: float
+        +UnrealizedPnL: float
+        +AssetCount: int
+        +ExchangeCount: int
+        +SnapshotData: JSON
+    }
+
+    class Transaction {
+        +TransactionID: UUID
+        +UserID: UUID
+        +Exchange: string
+        +Type: TransactionType
+        +Asset: string
+        +Amount: float
+        +PriceUSD: float
+        +ValueUSD: float
+        +Timestamp: Time
+    }
+
+    class PnLResult {
+        +RealizedPnL: float
+        +UnrealizedPnL: float
+        +TotalPnL: float
+        +ROI: float
+    }
+
+    class RiskMetrics {
+        +MaxDrawdown: float
+        +CurrentDrawdown: float
+        +Volatility: float
+        +SharpeRatio: float
+        +BestDay: float
+        +WorstDay: float
+    }
+
+    class DrawdownResult {
+        +MaxDrawdown: float
+        +CurrentDrawdown: float
+        +PeakValue: float
+        +ValleyValue: float
+        +PeakDate: Time
+        +ValleyDate: Time
+    }
+
+    %% Enums
+    class ConnectionStatus {
+        <<enumeration>>
+        ACTIVE
+        ERROR
+        DISCONNECTED
+        TESTING
+    }
+
+    class TransactionType {
+        <<enumeration>>
+        TRADE
+        DEPOSIT
+        WITHDRAWAL
+        FEE
+    }
+
+    %% Relationships - Broker Service
+    BrokerController --> ConnectionManager
+    BrokerController --> BybitAdapter
+    BrokerController --> BinanceAdapter
+
+    MarketDataController --> WebSocketManager
+    MarketDataController --> BybitAdapter
+    MarketDataController --> BinanceAdapter
+    MarketDataController --> ExchangeConfigManager
+    MarketDataController ..> TradingPairFilters
+    MarketDataController ..> TickerData
+    MarketDataController ..> ExchangeConfiguration
+
+    WebSocketManager --> BybitWebSocketAdapter
+    WebSocketManager --> BinanceWebSocketAdapter
+    WebSocketManager ..> MarketData
+
+    ExchangeConfigManager --> IBrokerRepository
+    ExchangeConfigManager --> ICacheManager
+    ExchangeConfigManager ..> ExchangeConfiguration
+
+    BybitWebSocketAdapter ..|> IWebSocketAdapter
+    BinanceWebSocketAdapter ..|> IWebSocketAdapter
+    
+    ConnectionManager --> IBrokerRepository
+    ConnectionManager --> CredentialManager
+    ConnectionManager --> CapabilityDetector
+    ConnectionManager --> BybitAdapter
+    ConnectionManager --> BinanceAdapter
+    ConnectionManager ..> BrokerConnection
+    
+    CredentialManager ..> Credentials
+    
+    CapabilityDetector --> BybitAdapter
+    CapabilityDetector --> BinanceAdapter
+    CapabilityDetector ..> APICapabilities
+    CapabilityDetector ..> EndpointTestResult
+    
+    BybitAdapter ..|> IBrokerAdapter
+    BybitAdapter --> RateLimiter
+    BybitAdapter ..> AccountInfo
+    BybitAdapter ..> Balance
+    BybitAdapter ..> OHLCV
+    BybitAdapter ..> TradingPair
+    BybitAdapter ..> EndpointTestResult
+    
+    BinanceAdapter ..|> IBrokerAdapter
+    BinanceAdapter --> RateLimiter
+    BinanceAdapter ..> AccountInfo
+    BinanceAdapter ..> Balance
+    BinanceAdapter ..> OHLCV
+    BinanceAdapter ..> TradingPair
+    BinanceAdapter ..> EndpointTestResult
+    
+    RateLimiter ..> RateLimitConfig
+    
+    BrokerRepository ..|> IBrokerRepository
+    
+    BrokerConnection --> ConnectionStatus
+    BrokerConnection --> APICapabilities
+    
+    APICapabilities --> EndpointTestResult
+    
+    %% Relationships - Portfolio Service
+    PortfolioController --> PortfolioAggregator
+    PortfolioController --> ChartGenerator
+    PortfolioController --> IPortfolioRepository
+    
+    PortfolioAggregator --> BrokerServiceClient
+    PortfolioAggregator --> PnLCalculator
+    PortfolioAggregator --> RiskAnalyzer
+    PortfolioAggregator --> ICacheManager
+    PortfolioAggregator --> NotificationPublisher
+    PortfolioAggregator ..> Portfolio
+    PortfolioAggregator ..> ExchangePortfolio
+    
+    BrokerServiceClient ..> OHLCV
+    
+    PnLCalculator --> IPortfolioRepository
+    PnLCalculator ..> PnLResult
+    PnLCalculator ..> Transaction
+    
+    RiskAnalyzer --> IPortfolioRepository
+    RiskAnalyzer ..> RiskMetrics
+    RiskAnalyzer ..> DrawdownResult
+    RiskAnalyzer ..> PortfolioSnapshot
+    
+    ChartGenerator --> IPortfolioRepository
+    ChartGenerator ..> PortfolioSnapshot
+    
+    SnapshotScheduler --> PortfolioAggregator
+    SnapshotScheduler --> IPortfolioRepository
+    SnapshotScheduler ..> PortfolioSnapshot
+    
+    PortfolioRepository ..|> IPortfolioRepository
+    
+    CacheManager ..|> ICacheManager
+    
+    Portfolio --> Asset
+    Portfolio --> ExchangePortfolio
+    
+    Transaction --> TransactionType

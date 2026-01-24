@@ -1,0 +1,402 @@
+classDiagram
+    %% Controllers
+    class NotificationController {
+        -repository: INotificationRepository
+        +GetNotifications(userID: UUID, filters: NotificationFilters) PaginatedNotificationResponse
+        +GetNotification(notificationID: UUID) NotificationResponse
+        +MarkAsRead(notificationID: UUID) void
+        +MarkAllAsRead(userID: UUID) void
+        +DeleteNotification(notificationID: UUID) void
+        +GetPreferences(userID: UUID) NotificationPreferences
+        +UpdatePreferences(userID: UUID, preferences: NotificationPreferences) void
+    }
+
+    class AdminNotificationController {
+        -templateManager: TemplateManager
+        -broadcastManager: BroadcastManager
+        -typeConfigRepo: ITypeConfigRepository
+        +ListTemplates(filters: TemplateFilters) PaginatedTemplateResponse
+        +GetTemplate(type: NotificationType) TemplateDetailResponse
+        +UpdateTemplate(type: NotificationType, request: UpdateTemplateRequest) TemplateResponse
+        +PreviewTemplate(type: NotificationType, request: PreviewRequest) PreviewResponse
+        +RollbackTemplate(type: NotificationType, version: int) TemplateResponse
+        +UpdateTypeConfig(type: NotificationType, config: TypeConfigRequest) TypeConfigResponse
+        +CreateBroadcast(request: CreateBroadcastRequest) BroadcastResponse
+        +PreviewBroadcastRecipients(broadcastID: UUID) RecipientPreviewResponse
+        +SendBroadcast(broadcastID: UUID) BroadcastResponse
+        +CancelBroadcast(broadcastID: UUID) BroadcastResponse
+        +ListBroadcasts(filters: BroadcastFilters) PaginatedBroadcastResponse
+        +GetBroadcast(broadcastID: UUID) BroadcastDetailResponse
+    }
+
+    %% Event Processing
+    class EventConsumer {
+        -serviceBus: ServiceBusClient
+        -notificationManager: NotificationManager
+        +Start() void
+        +Stop() void
+        +ProcessEvent(event: NotificationEvent) error
+        -handleBacktestComplete(event: BacktestCompleteEvent) error
+        -handlePortfolioAlert(event: PortfolioAlertEvent) error
+        -handlePriceAlert(event: PriceAlertEvent) error
+        -handlePortfolioValueChange(event: PortfolioValueChangeEvent) error
+        -handleSystemUpdate(event: SystemUpdateEvent) error
+        -handleBroadcast(event: BroadcastEvent) error
+    }
+
+    class NotificationManager {
+        -emailSender: EmailSender
+        -inAppManager: InAppManager
+        -templateManager: TemplateManager
+        -repository: INotificationRepository
+        +Process(event: NotificationEvent) error
+        +Send(notification: Notification) error
+        -shouldSendEmail(userID: UUID, type: NotificationType) bool
+        -shouldSendInApp(userID: UUID, type: NotificationType) bool
+        -getPreferences(userID: UUID) NotificationPreferences
+        -checkCooldown(userID: UUID, type: NotificationType) bool
+    }
+
+    %% Email & In-App Managers
+    class EmailSender {
+        -sendGridClient: SendGridClient
+        -templateManager: TemplateManager
+        -fromEmail: string
+        +Send(to: string, subject: string, body: string) error
+        +SendWithTemplate(to: string, templateID: string, data: Map) error
+        +SendBatch(recipients: List~EmailRecipient~) BatchResult
+        -buildEmail(notification: Notification) Email
+        -renderTemplate(template: NotificationTemplate, data: Map) RenderedEmail
+        -trackDelivery(deliveryID: UUID, status: DeliveryStatus) error
+    }
+
+    class InAppManager {
+        -repository: INotificationRepository
+        -templateManager: TemplateManager
+        +Create(notification: Notification) error
+        +CreateBatch(notifications: List~Notification~) error
+        +MarkAsRead(notificationID: UUID) error
+        +MarkAllAsRead(userID: UUID) error
+        +Delete(notificationID: UUID) error
+        +GetUnreadCount(userID: UUID) int
+        -renderInAppContent(template: NotificationTemplate, data: Map) InAppContent
+    }
+
+    %% Template Management
+    class TemplateManager {
+        -repository: ITemplateRepository
+        -cache: TemplateCache
+        +GetTemplate(type: NotificationType) NotificationTemplate
+        +UpdateTemplate(type: NotificationType, update: TemplateUpdate) NotificationTemplate
+        +RenderTemplate(template: NotificationTemplate, data: Map) RenderedContent
+        +ValidateTemplate(template: NotificationTemplate) ValidationResult
+        +SaveToHistory(template: NotificationTemplate, changedBy: UUID, reason: string) void
+        +GetHistory(templateID: UUID) List~TemplateHistory~
+        +RollbackToVersion(templateID: UUID, version: int, changedBy: UUID) NotificationTemplate
+        -invalidateCache(type: NotificationType) void
+    }
+
+    class TemplateCache {
+        -redis: RedisClient
+        -ttl: Duration
+        +Get(type: NotificationType) NotificationTemplate
+        +Set(type: NotificationType, template: NotificationTemplate) void
+        +Invalidate(type: NotificationType) void
+    }
+
+    %% Broadcast Management
+    class BroadcastManager {
+        -repository: IBroadcastRepository
+        -userService: IUserService
+        -notificationManager: NotificationManager
+        +Create(request: CreateBroadcastRequest, createdBy: UUID) Broadcast
+        +GetRecipientPreview(broadcastID: UUID) RecipientPreview
+        +Send(broadcastID: UUID, approvedBy: UUID) BroadcastResult
+        +Schedule(broadcastID: UUID, scheduledAt: Time) Broadcast
+        +Cancel(broadcastID: UUID) Broadcast
+        -resolveRecipients(targeting: BroadcastTargeting) List~UUID~
+        -sendInBatches(broadcast: Broadcast, recipients: List~UUID~) BroadcastResult
+    }
+
+    class BroadcastScheduler {
+        -repository: IBroadcastRepository
+        -broadcastManager: BroadcastManager
+        +Start() void
+        +Stop() void
+        +CheckScheduledBroadcasts() void
+        -processScheduledBroadcast(broadcast: Broadcast) error
+    }
+
+    %% Repositories
+    class INotificationRepository {
+        <<interface>>
+        +Save(notification: Notification) error
+        +SaveBatch(notifications: List~Notification~) error
+        +Update(notification: Notification) error
+        +Delete(notificationID: UUID) error
+        +FindByID(notificationID: UUID) Notification
+        +FindByUserID(userID: UUID, filters: NotificationFilters) List~Notification~
+        +MarkAsRead(notificationID: UUID) error
+        +MarkAllAsRead(userID: UUID) error
+        +GetUnreadCount(userID: UUID) int
+        +SavePreferences(userID: UUID, preferences: NotificationPreferences) error
+        +GetPreferences(userID: UUID) NotificationPreferences
+        +SaveEmailDelivery(delivery: EmailDelivery) error
+        +UpdateEmailDeliveryStatus(deliveryID: UUID, status: DeliveryStatus) error
+    }
+
+    class ITemplateRepository {
+        <<interface>>
+        +FindByType(type: NotificationType) NotificationTemplate
+        +Save(template: NotificationTemplate) error
+        +SaveHistory(history: TemplateHistory) error
+        +GetHistory(templateID: UUID) List~TemplateHistory~
+        +GetTypeConfig(type: NotificationType) NotificationTypeConfig
+        +SaveTypeConfig(config: NotificationTypeConfig) error
+    }
+
+    class IBroadcastRepository {
+        <<interface>>
+        +Save(broadcast: Broadcast) error
+        +Update(broadcast: Broadcast) error
+        +FindByID(broadcastID: UUID) Broadcast
+        +FindScheduled(beforeTime: Time) List~Broadcast~
+        +FindByStatus(status: BroadcastStatus) List~Broadcast~
+        +GetStatistics(broadcastID: UUID) BroadcastStatistics
+    }
+
+    class NotificationRepository {
+        -db: Database
+        +Save(notification: Notification) error
+        +SaveBatch(notifications: List~Notification~) error
+        +Update(notification: Notification) error
+        +Delete(notificationID: UUID) error
+        +FindByID(notificationID: UUID) Notification
+        +FindByUserID(userID: UUID, filters: NotificationFilters) List~Notification~
+        +MarkAsRead(notificationID: UUID) error
+        +MarkAllAsRead(userID: UUID) error
+        +GetUnreadCount(userID: UUID) int
+        +SavePreferences(userID: UUID, preferences: NotificationPreferences) error
+        +GetPreferences(userID: UUID) NotificationPreferences
+        +SaveEmailDelivery(delivery: EmailDelivery) error
+        +UpdateEmailDeliveryStatus(deliveryID: UUID, status: DeliveryStatus) error
+        -toNotificationModel(row: DatabaseRow) Notification
+    }
+
+    %% Models
+    class Notification {
+        +NotificationID: UUID
+        +UserID: UUID
+        +Type: NotificationType
+        +Priority: NotificationPriority
+        +Title: string
+        +Message: string
+        +Data: JSON
+        +ActionURL: string
+        +ActionLabel: string
+        +Read: bool
+        +CreatedAt: Time
+        +ReadAt: Time
+        +ExpiresAt: Time
+    }
+
+    class NotificationEvent {
+        +EventID: UUID
+        +Type: NotificationType
+        +UserID: UUID
+        +Data: Map
+        +Timestamp: Time
+    }
+
+    class NotificationPreferences {
+        +UserID: UUID
+        +EmailEnabled: bool
+        +InAppEnabled: bool
+        +EmailBacktestComplete: bool
+        +EmailBacktestFailed: bool
+        +EmailPortfolioDrawdown: bool
+        +EmailPortfolioValueChange: bool
+        +EmailPriceAlert: bool
+        +EmailSystemUpdate: bool
+        +EmailSystemBroadcast: bool
+        +InAppBacktestComplete: bool
+        +InAppBacktestFailed: bool
+        +InAppPortfolioDrawdown: bool
+        +InAppPortfolioValueChange: bool
+        +InAppPriceAlert: bool
+        +InAppSystemUpdate: bool
+        +InAppSystemBroadcast: bool
+        +EnableQuietHours: bool
+        +QuietHoursStart: Time
+        +QuietHoursEnd: Time
+        +QuietHoursTimezone: string
+    }
+
+    class NotificationTemplate {
+        +ID: UUID
+        +Type: NotificationType
+        +Version: int
+        +IsActive: bool
+        +EmailSubjectTemplate: string
+        +EmailBodyTemplate: string
+        +SendgridTemplateID: string
+        +TitleTemplate: string
+        +MessageTemplate: string
+        +DefaultActionLabel: string
+        +ActionURLTemplate: string
+        +DefaultPriority: NotificationPriority
+        +PreviewData: JSON
+        +CreatedBy: UUID
+        +UpdatedBy: UUID
+        +CreatedAt: Time
+        +UpdatedAt: Time
+    }
+
+    class NotificationTypeConfig {
+        +Type: NotificationType
+        +DisplayName: string
+        +Description: string
+        +Category: string
+        +Icon: string
+        +Color: string
+        +DefaultPriority: NotificationPriority
+        +DefaultEmailEnabled: bool
+        +DefaultInAppEnabled: bool
+        +IsEnabled: bool
+        +IsUserConfigurable: bool
+        +TemplateVariables: JSON
+    }
+
+    class Broadcast {
+        +ID: UUID
+        +Title: string
+        +Message: string
+        +Priority: NotificationPriority
+        +Targeting: BroadcastTargeting
+        +SendEmail: bool
+        +SendInApp: bool
+        +ScheduledAt: Time
+        +Status: BroadcastStatus
+        +SentAt: Time
+        +TotalRecipients: int
+        +EmailsSent: int
+        +InAppCreated: int
+        +CreatedBy: UUID
+        +ApprovedBy: UUID
+        +CreatedAt: Time
+    }
+
+    class BroadcastTargeting {
+        +TargetAllUsers: bool
+        +TargetUserIDs: List~UUID~
+        +TargetFilter: JSON
+    }
+
+    class EmailDelivery {
+        +ID: UUID
+        +UserID: UUID
+        +NotificationID: UUID
+        +NotificationType: NotificationType
+        +RecipientEmail: string
+        +Subject: string
+        +SendgridMessageID: string
+        +Status: DeliveryStatus
+        +SentAt: Time
+        +DeliveredAt: Time
+        +OpenedAt: Time
+        +ErrorMessage: string
+        +RetryCount: int
+    }
+
+    %% Enums
+    class NotificationType {
+        <<enumeration>>
+        BACKTEST_COMPLETE
+        BACKTEST_FAILED
+        PORTFOLIO_DRAWDOWN
+        PORTFOLIO_MILESTONE
+        PORTFOLIO_VALUE_CHANGE
+        PRICE_ALERT
+        SYSTEM_UPDATE
+        SYSTEM_BROADCAST
+        ACCOUNT_SUSPENDED
+        ACCOUNT_VERIFIED
+        PASSWORD_RESET
+        BROKER_CONNECTION_FAILED
+    }
+
+    class NotificationPriority {
+        <<enumeration>>
+        LOW
+        NORMAL
+        HIGH
+        URGENT
+    }
+
+    class DeliveryStatus {
+        <<enumeration>>
+        PENDING
+        SENT
+        DELIVERED
+        FAILED
+        BOUNCED
+        OPENED
+    }
+
+    class BroadcastStatus {
+        <<enumeration>>
+        DRAFT
+        SCHEDULED
+        SENDING
+        SENT
+        CANCELLED
+    }
+
+    %% Relationships - Controllers
+    NotificationController --> INotificationRepository
+    AdminNotificationController --> TemplateManager
+    AdminNotificationController --> BroadcastManager
+    AdminNotificationController --> ITypeConfigRepository
+
+    %% Relationships - Event Processing
+    EventConsumer --> NotificationManager
+
+    %% Relationships - Notification Manager
+    NotificationManager --> EmailSender
+    NotificationManager --> InAppManager
+    NotificationManager --> TemplateManager
+    NotificationManager --> INotificationRepository
+    NotificationManager ..> Notification
+
+    %% Relationships - Email & In-App
+    EmailSender --> TemplateManager
+    InAppManager --> INotificationRepository
+    InAppManager --> TemplateManager
+
+    %% Relationships - Template
+    TemplateManager --> ITemplateRepository
+    TemplateManager --> TemplateCache
+
+    %% Relationships - Broadcast
+    BroadcastManager --> IBroadcastRepository
+    BroadcastManager --> NotificationManager
+    BroadcastScheduler --> IBroadcastRepository
+    BroadcastScheduler --> BroadcastManager
+
+    %% Relationships - Repository Implementations
+    NotificationRepository ..|> INotificationRepository
+
+    %% Relationships - Models to Enums
+    Notification --> NotificationType
+    Notification --> NotificationPriority
+    NotificationEvent --> NotificationType
+    NotificationPreferences --> NotificationType
+    NotificationTemplate --> NotificationType
+    NotificationTemplate --> NotificationPriority
+    NotificationTypeConfig --> NotificationType
+    NotificationTypeConfig --> NotificationPriority
+    Broadcast --> NotificationPriority
+    Broadcast --> BroadcastStatus
+    Broadcast --> BroadcastTargeting
+    EmailDelivery --> NotificationType
+    EmailDelivery --> DeliveryStatus

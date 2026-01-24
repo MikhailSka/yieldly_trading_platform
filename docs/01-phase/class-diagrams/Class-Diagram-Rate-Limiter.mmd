@@ -1,0 +1,65 @@
+classDiagram
+    class RateLimiter {
+        -redis: RedisClient
+        -limits: Map~string,RateLimitConfig~
+        +CheckLimit(key: string, broker: string, endpoint: string) LimitResult
+        +IncrementUsage(key: string, broker: string, endpoint: string) error
+        +GetUsage(key: string, broker: string) UsageStats
+        +ResetLimit(key: string, broker: string) error
+        -getLimit(broker: string, endpoint: string) RateLimitConfig
+        -buildKey(key: string, broker: string, endpoint: string) string
+        -applyWindow(key: string, window: Duration) error
+    }
+
+    class RateLimitConfig {
+        +Broker: string
+        +Endpoint: string
+        +RequestsPerMinute: int
+        +Weight: int
+        +BurstLimit: int
+        +WindowSize: Duration
+    }
+
+    class LimitResult {
+        +Allowed: bool
+        +Remaining: int
+        +ResetAt: Time
+        +RetryAfter: Duration
+    }
+
+    class UsageStats {
+        +Broker: string
+        +CurrentUsage: int
+        +Limit: int
+        +WindowStart: Time
+        +WindowEnd: Time
+    }
+
+    class SlidingWindowCounter {
+        -redis: RedisClient
+        +Increment(key: string, window: Duration) int
+        +GetCount(key: string, window: Duration) int
+        +Reset(key: string) error
+        -removeExpiredEntries(key: string, window: Duration) error
+    }
+
+    class TokenBucket {
+        -redis: RedisClient
+        +TryConsume(key: string, tokens: int, capacity: int, refillRate: int) bool
+        +GetAvailable(key: string) int
+        +Refill(key: string, capacity: int, refillRate: int) error
+        -calculateRefill(lastRefill: Time, refillRate: int) int
+    }
+
+    class BrokerLimits {
+        +GetBybitLimits() Map~string,RateLimitConfig~
+        +GetBinanceLimits() Map~string,RateLimitConfig~
+        +GetDefaultLimits(broker: string) Map~string,RateLimitConfig~
+    }
+
+    RateLimiter --> SlidingWindowCounter
+    RateLimiter --> TokenBucket
+    RateLimiter --> BrokerLimits
+    RateLimiter ..> RateLimitConfig
+    RateLimiter ..> LimitResult
+    RateLimiter ..> UsageStats

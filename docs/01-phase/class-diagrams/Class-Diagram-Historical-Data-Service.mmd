@@ -1,0 +1,579 @@
+classDiagram
+    %% ============================================================
+    %% IMPORTANT: 1-Minute Storage Architecture
+    %% ============================================================
+    %% All OHLCV data is stored in 1-minute (1m) timeframe ONLY.
+    %% Higher timeframes (5m, 15m, 1h, 4h, 1d) are computed on-the-fly
+    %% during retrieval using TimescaleDB's time_bucket() function.
+    %% See PROC-HISTORICAL-001 and PROC-HISTORICAL-002 for details.
+    %% ============================================================
+
+    %% Historical Data Service - Controllers (User endpoints - read-only access to data)
+    class HistoricalDataController {
+        -queryService: DataQueryService
+        -symbolManager: SymbolManager
+        -timeframeAggregator: TimeframeAggregator
+        +GetOHLCV(exchange: string, symbol: string, timeframe: string, start: Time, end: Time) OHLCVResponse
+        +GetAvailableSymbols(exchange: string) List~SymbolInfo~
+        +GetSymbolMetadata(exchange: string, symbol: string) SymbolMetadataResponse
+        +GetDataCoverage(exchange: string, symbol: string) List~DataRange~
+    }
+    %% Note: Users can only query existing data - downloads are admin-only (PROC-HISTORICAL-001)
+
+    %% Historical Data Service - Admin Controller (Admin-only data management)
+    class HistoricalDataAdminController {
+        -dataManager: HistoricalDataManager
+        -symbolManager: SymbolManager
+        -qualityChecker: DataQualityChecker
+        -jobManager: DownloadJobManager
+        -downloadCoordinator: DownloadCoordinator
+        -deletionManager: DataDeletionManager
+        +IngestHistoricalData(request: IngestRequest) IngestResponse
+        +GetDownloadStatus(jobID: UUID) DownloadStatusResponse
+        +ListSymbols(filters: AdminSymbolFilters) PaginatedSymbolListResponse
+        +GetSymbolDetails(exchange: string, symbol: string) SymbolDetailsResponse
+        +DeleteData(request: DeleteDataRequest) DeleteDataResponse
+        +DeleteSymbolData(exchange: string, symbol: string) DeleteDataResponse
+        +RunQualityCheck(request: QualityCheckRequest) QualityCheckResponse
+        +ListDownloadJobs(filters: JobFilters) PaginatedJobListResponse
+        +CancelDownloadJob(jobID: UUID, reason: string) CancelJobResponse
+    }
+    %% Note: All data ingestion/deletion is admin-only. No DeleteTimeframeData - all data stored as 1m only
+
+    %% Historical Data Service - Core Logic
+    class HistoricalDataManager {
+        -repository: IHistoricalDataRepository
+        -brokerClient: BrokerServiceClient
+        -dataValidator: DataValidator
+        -rangeManager: DataRangeManager
+        +IngestOHLCVData(exchange: string, symbol: string, candles: List~OHLCV~) error
+        +RequestDownload(exchange: string, symbol: string, start: Time, end: Time) UUID
+        +GetDataCoverage(exchange: string, symbol: string) List~DataRange~
+        -validateAndStore(candles: List~OHLCV~) error
+        -checkDuplicates(candles: List~OHLCV~) List~OHLCV~
+    }
+    %% Note: All data ingested as 1m timeframe only
+
+    class DataQueryService {
+        -repository: IHistoricalDataRepository
+        -cacheManager: ICacheManager
+        -timeframeAggregator: TimeframeAggregator
+        +QueryOHLCV(exchange: string, symbol: string, timeframe: string, start: Time, end: Time) List~OHLCV~
+        +QueryLatestCandles(exchange: string, symbol: string, timeframe: string, limit: int) List~OHLCV~
+        +CheckDataAvailability(exchange: string, symbol: string, start: Time, end: Time) bool
+        -buildQuery(filters: QueryFilters) string
+        -cacheResults(key: string, data: List~OHLCV~) error
+    }
+    %% Note: QueryOHLCV aggregates 1m data to requested timeframe on-the-fly
+
+    class TimeframeAggregator {
+        +AggregateToTimeframe(candles1m: List~OHLCV~, targetTimeframe: string) List~OHLCV~
+        +GetTimeframeInterval(timeframe: string) Duration
+        +IsValidTimeframe(timeframe: string) bool
+        -aggregateCandles(candles: List~OHLCV~, bucketSize: Duration) OHLCV
+        -getFirstOpen(candles: List~OHLCV~) float64
+        -getLastClose(candles: List~OHLCV~) float64
+        -getMaxHigh(candles: List~OHLCV~) float64
+        -getMinLow(candles: List~OHLCV~) float64
+        -sumVolume(candles: List~OHLCV~) float64
+    }
+    %% Supported timeframes: 1m (stored), 5m, 15m, 1h, 4h, 1d (computed)
+
+    class DataRangeManager {
+        -repository: IHistoricalDataRepository
+        +UpdateRanges(exchange: string, symbol: string, start: Time, end: Time, count: int64) error
+        +GetAvailableRanges(exchange: string, symbol: string) List~DataRange~
+        +IsDataAvailable(exchange: string, symbol: string, start: Time, end: Time) bool
+        +MergeOverlappingRanges(exchange: string, symbol: string) error
+        -findOverlappingRanges(newRange: DataRange, existing: List~DataRange~) List~DataRange~
+        -mergeRanges(ranges: List~DataRange~) DataRange
+    }
+    %% Note: All ranges are for 1m timeframe only
+
+    class SymbolManager {
+        -repository: IHistoricalDataRepository
+        -brokerClient: BrokerServiceClient
+        +SyncSymbols(exchange: string) error
+        +GetSymbolMetadata(exchange: string, symbol: string) SymbolMetadata
+        +GetAvailableSymbols(exchange: string) List~SymbolMetadata~
+        +UpdateSymbolStats(exchange: string, symbol: string) error
+        -calculateCompleteness(symbol: string, timeframe: string) float
+        -updateEarliestLatest(symbol: string) error
+    }
+
+    class DataValidator {
+        -config: ValidationConfig
+        +ValidateOHLCV(candle: OHLCV) ValidationResult
+        +ValidateBatch(candles: List~OHLCV~) List~ValidationResult~
+        +DetectAnomalies(candles: List~OHLCV~) List~Anomaly~
+        -checkPriceSpike(candles: List~OHLCV~, index: int) bool
+        -checkVolumeAnomaly(candle: OHLCV, avgVolume: float) bool
+        -checkOHLCRelationship(candle: OHLCV) bool
+        -checkTimestampSequence(candles: List~OHLCV~) bool
+    }
+
+    class DownloadCoordinator {
+        -brokerClient: BrokerServiceClient
+        -dataManager: HistoricalDataManager
+        -repository: IHistoricalDataRepository
+        +InitiateDownload(exchange: string, symbol: string, start: Time, end: Time) UUID
+        +GetDownloadStatus(jobID: UUID) DownloadStatus
+        -pollBrokerJob(brokerJobID: UUID) error
+        -handleDownloadComplete(jobID: UUID) error
+    }
+    %% Note: Always downloads 1m data from exchange
+
+    class DataQualityChecker {
+        -repository: IHistoricalDataRepository
+        -validator: DataValidator
+        +RunQualityCheck(request: QualityCheckRequest) QualityCheckResult
+        +DetectMissingData(exchange: string, symbol: string, start: Time, end: Time) List~Time~
+        +DetectDuplicates(exchange: string, symbol: string, start: Time, end: Time) List~DuplicateInfo~
+        +CheckOHLCRelationships(exchange: string, symbol: string, start: Time, end: Time) List~OHLCIssue~
+        +DetectPriceSpikes(exchange: string, symbol: string, start: Time, end: Time, threshold: float) List~PriceSpikeInfo~
+        +DetectVolumeAnomalies(exchange: string, symbol: string, start: Time, end: Time, multiplier: float) List~VolumeAnomalyInfo~
+        +AutoFixIssues(issues: List~QualityIssue~, autoFix: bool) AutoFixResult
+        -updateQualityStatus(timestamps: List~Time~, status: QualityStatus) error
+    }
+    %% Note: Quality checks run on 1m data only
+
+    class DownloadJobManager {
+        -brokerDBClient: BrokerDBClient
+        -messageBus: ServiceBusClient
+        +ListJobs(filters: JobFilters) PaginatedJobList
+        +GetJobDetails(jobID: UUID) DownloadJobDetails
+        +CancelJob(jobID: UUID, reason: string) CancelResult
+        -sendCancellationSignal(jobID: UUID) error
+        -updateJobStatus(jobID: UUID, status: string, error: string) error
+    }
+
+    class DataDeletionManager {
+        -repository: IHistoricalDataRepository
+        -cacheManager: ICacheManager
+        +DeleteSymbolData(exchange: string, symbol: string) DeletionResult
+        +DeleteDateRangeData(exchange: string, symbol: string, start: Time, end: Time) DeletionResult
+        -recalculateSymbolMetadata(exchange: string, symbol: string) error
+        -invalidateCache(exchange: string, symbol: string) error
+    }
+    %% Note: No DeleteTimeframeData - only 1m data is stored
+
+    class BrokerServiceClient {
+        -httpClient: HTTPClient
+        -baseURL: string
+        -timeout: Duration
+        +RequestHistoricalDownload(exchange: string, symbol: string, start: Time, end: Time) DownloadJobID
+        +GetDownloadJobStatus(jobID: UUID) JobStatus
+        +GetSymbols(exchange: string) List~TradingPair~
+        -buildRequest(endpoint: string, params: Map) HTTPRequest
+        -handleResponse(response: HTTPResponse) Result
+    }
+    %% Note: Always requests 1m timeframe from Broker Service
+
+    %% Repository Interface
+    class IHistoricalDataRepository {
+        <<interface>>
+        +SaveOHLCVBatch(candles: List~OHLCV~) error
+        +QueryOHLCV(filters: QueryFilters) List~OHLCV~
+        +QueryOHLCVAggregated(exchange: string, symbol: string, interval: Duration, start: Time, end: Time) List~OHLCV~
+        +GetSymbolMetadata(exchange: string, symbol: string) SymbolMetadata
+        +SaveSymbolMetadata(metadata: SymbolMetadata) error
+        +GetAllSymbols(exchange: string) List~SymbolMetadata~
+        +GetAllSymbolsPaginated(filters: AdminSymbolFilters) PaginatedSymbolList
+        +SaveDataRange(range: DataRange) error
+        +GetDataRanges(exchange: string, symbol: string) List~DataRange~
+        +MergeDataRanges(exchange: string, symbol: string, newRange: DataRange) error
+        +SaveQualityCheck(check: QualityCheck) error
+        +GetQualityChecks(filters: QualityCheckFilters) List~QualityCheck~
+        +DeleteOHLCVData(exchange: string, symbol: string, start: Time, end: Time) int64
+        +DeleteDataRanges(exchange: string, symbol: string) error
+        +DeleteQualityChecks(exchange: string, symbol: string) error
+        +UpdateSymbolMetadataStats(exchange: string, symbol: string) error
+        +GetOHLCVQualityStats(exchange: string, symbol: string) QualityStats
+    }
+    %% Note: All data stored as 1m; QueryOHLCVAggregated uses time_bucket()
+
+    class HistoricalDataRepository {
+        -db: TimescaleDBConnection
+        -txManager: TransactionManager
+        +SaveOHLCVBatch(candles: List~OHLCV~) error
+        +QueryOHLCV(filters: QueryFilters) List~OHLCV~
+        +QueryOHLCVAggregated(exchange: string, symbol: string, interval: Duration, start: Time, end: Time) List~OHLCV~
+        +GetSymbolMetadata(exchange: string, symbol: string) SymbolMetadata
+        +SaveSymbolMetadata(metadata: SymbolMetadata) error
+        +GetAllSymbols(exchange: string) List~SymbolMetadata~
+        +GetAllSymbolsPaginated(filters: AdminSymbolFilters) PaginatedSymbolList
+        +SaveDataRange(range: DataRange) error
+        +GetDataRanges(exchange: string, symbol: string) List~DataRange~
+        +MergeDataRanges(exchange: string, symbol: string, newRange: DataRange) error
+        +SaveQualityCheck(check: QualityCheck) error
+        +GetQualityChecks(filters: QualityCheckFilters) List~QualityCheck~
+        +DeleteOHLCVData(exchange: string, symbol: string, start: Time, end: Time) int64
+        +DeleteDataRanges(exchange: string, symbol: string) error
+        +DeleteQualityChecks(exchange: string, symbol: string) error
+        +UpdateSymbolMetadataStats(exchange: string, symbol: string) error
+        +GetOHLCVQualityStats(exchange: string, symbol: string) QualityStats
+        -batchInsert(candles: List~OHLCV~) error
+        -buildTimeBucketQuery(interval: Duration) string
+        -executeStoredProcedure(name: string, params: Map) Result
+        -toModel(row: DatabaseRow) interface
+        -fromModel(model: interface) DatabaseRow
+    }
+    %% Note: Uses TimescaleDB time_bucket() for aggregation
+
+    %% Cache Manager
+    class ICacheManager {
+        <<interface>>
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+        +Exists(key: string) bool
+    }
+
+    class CacheManager {
+        -redis: RedisClient
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+        +Exists(key: string) bool
+        -buildCacheKey(exchange: string, symbol: string, timeframe: string) string
+        -serialize(data: any) string
+        -deserialize(data: string) any
+    }
+
+    %% Domain Models
+    class OHLCV {
+        +ID: int64
+        +Timestamp: Time
+        +Exchange: string
+        +Symbol: string
+        +Timeframe: string
+        +Open: float64
+        +High: float64
+        +Low: float64
+        +Close: float64
+        +Volume: float64
+        +QuoteVolume: float64
+        +NumberOfTrades: int
+        +QualityStatus: string
+        +QualityScore: float64
+        +IngestedAt: Time
+        +IsValid() bool
+        +CheckOHLCRelationship() bool
+    }
+    %% Note: Timeframe is always '1m' when stored; can be any when computed
+
+    class SymbolMetadata {
+        +ID: UUID
+        +Exchange: string
+        +Symbol: string
+        +BaseAsset: string
+        +QuoteAsset: string
+        +StorageTimeframe: string
+        +SupportedTimeframes: List~string~
+        +EarliestDataTimestamp: Time
+        +LatestDataTimestamp: Time
+        +TotalCandlesCount: int64
+        +DataCompletenessPercentage: float64
+        +IsActive: bool
+        +IsDelisted: bool
+        +LastSyncedAt: Time
+        +CreatedAt: Time
+        +UpdatedAt: Time
+    }
+    %% Note: StorageTimeframe='1m', SupportedTimeframes=['1m','5m','15m','1h','4h','1d']
+
+    class DataRange {
+        +ID: UUID
+        +Exchange: string
+        +Symbol: string
+        +Timeframe: string
+        +StartTimestamp: Time
+        +EndTimestamp: Time
+        +CandleCount: int64
+        +CreatedAt: Time
+        +UpdatedAt: Time
+        +Contains(start: Time, end: Time) bool
+        +Overlaps(other: DataRange) bool
+        +Merge(other: DataRange) DataRange
+    }
+    %% Note: Timeframe is always '1m'
+
+    class QualityCheck {
+        +ID: UUID
+        +Exchange: string
+        +Symbol: string
+        +Timeframe: string
+        +CheckType: string
+        +CheckTimestamp: Time
+        +CheckStartTimestamp: Time
+        +CheckEndTimestamp: Time
+        +IssuesFound: int
+        +IssuesDetails: JSON
+        +AutoResolved: bool
+        +ManualReviewRequired: bool
+    }
+    %% Note: Timeframe is always '1m' - quality checks on source data
+
+    class ValidationResult {
+        +IsValid: bool
+        +Errors: List~string~
+        +Warnings: List~string~
+        +QualityScore: float64
+    }
+
+    class Anomaly {
+        +Type: string
+        +Timestamp: Time
+        +Symbol: string
+        +Description: string
+        +Severity: string
+        +Value: float64
+        +ExpectedValue: float64
+    }
+
+    class QueryFilters {
+        +Exchange: string
+        +Symbol: string
+        +Timeframe: string
+        +StartTime: Time
+        +EndTime: Time
+        +Limit: int
+        +OrderBy: string
+    }
+    %% Note: Timeframe can be any supported value; aggregation happens on query
+
+    class DownloadStatus {
+        +JobID: UUID
+        +BrokerJobID: UUID
+        +Exchange: string
+        +Symbol: string
+        +StorageTimeframe: string
+        +StartTime: Time
+        +EndTime: Time
+        +Status: string
+        +Progress: float64
+        +CandlesDownloaded: int64
+        +Error: string
+    }
+    %% Note: StorageTimeframe is always '1m'
+
+    class ValidationConfig {
+        +MaxPriceChangePercent: float64
+        +MaxVolumeMultiplier: float64
+        +MinVolumeThreshold: float64
+        +EnablePriceSpikeDetection: bool
+        +EnableVolumeAnomalyDetection: bool
+    }
+
+    %% Admin DTOs
+    class AdminSymbolFilters {
+        +Page: int
+        +PageSize: int
+        +SortBy: string
+        +SortOrder: string
+        +Exchange: string
+        +Search: string
+        +HasData: bool
+    }
+    %% Note: No Timeframe filter - all symbols with data support all timeframes
+
+    class QualityCheckRequest {
+        +Exchange: string
+        +Symbol: string
+        +StartDate: Time
+        +EndDate: Time
+        +CheckTypes: List~string~
+        +AutoFix: bool
+        +PriceSpikeThreshold: float64
+        +VolumeAnomalyMultiplier: float64
+    }
+    %% Note: No Timeframe - quality checks run on 1m data only
+
+    class QualityCheckResult {
+        +CheckID: UUID
+        +Exchange: string
+        +Symbol: string
+        +StorageTimeframe: string
+        +CandlesChecked: int64
+        +TotalIssuesFound: int
+        +IssuesAutoFixed: int
+        +ManualReviewRequired: int
+        +Results: Map~string,CheckTypeResult~
+        +CheckedAt: Time
+    }
+    %% Note: StorageTimeframe is always '1m'
+
+    class IngestRequest {
+        +Exchange: string
+        +Symbol: string
+        +StartDate: Time
+        +EndDate: Time
+    }
+    %% Note: No Timeframe - data is always ingested as 1m (see PROC-HISTORICAL-001)
+
+    class IngestResponse {
+        +Exchange: string
+        +Symbol: string
+        +StorageTimeframe: string
+        +DateRange: DateRange
+        +Summary: IngestSummary
+        +Timing: IngestTiming
+        +IngestedAt: Time
+        +IngestedBy: string
+    }
+    %% Note: StorageTimeframe is always '1m'
+
+    class DeleteDataRequest {
+        +Exchange: string
+        +Symbol: string
+        +StartDate: Time
+        +EndDate: Time
+        +Confirm: bool
+    }
+    %% Note: No Timeframe - deletion always affects 1m data (the only stored data)
+
+    class DeletionResult {
+        +Exchange: string
+        +Symbol: string
+        +StorageTimeframe: string
+        +CandlesDeleted: int64
+        +DataRangesDeleted: int
+        +QualityChecksDeleted: int
+        +DeletedAt: Time
+        +DeletedBy: string
+        +Note: string
+    }
+    %% Note: StorageTimeframe='1m', Note explains higher timeframes are affected
+
+    class JobFilters {
+        +Page: int
+        +PageSize: int
+        +SortBy: string
+        +SortOrder: string
+        +Status: string
+        +Exchange: string
+        +Symbol: string
+        +DateFrom: Time
+        +DateTo: Time
+    }
+
+    class DownloadJobDetails {
+        +JobID: UUID
+        +Exchange: string
+        +DataType: string
+        +Symbol: string
+        +StorageTimeframe: string
+        +DateRange: DateRange
+        +Status: string
+        +Progress: JobProgress
+        +Records: RecordCounts
+        +Timing: JobTiming
+        +Retries: RetryInfo
+        +Error: string
+    }
+    %% Note: StorageTimeframe is always '1m'
+
+    class QualityStats {
+        +StorageTimeframe: string
+        +ActualCandleCount: int64
+        +ValidCount: int64
+        +SuspiciousCount: int64
+        +InvalidCount: int64
+    }
+    %% Note: StorageTimeframe is always '1m'
+
+    %% Enums
+    class QualityStatus {
+        <<enumeration>>
+        VALID
+        SUSPICIOUS
+        INVALID
+    }
+
+    class CheckType {
+        <<enumeration>>
+        PRICE_SPIKE
+        VOLUME_ANOMALY
+        MISSING_DATA
+        DUPLICATE_DATA
+    }
+
+    %% Relationships - User Controller (read-only access)
+    HistoricalDataController --> DataQueryService
+    HistoricalDataController --> SymbolManager
+    HistoricalDataController --> TimeframeAggregator
+
+    %% Relationships - Admin Controller (full data management)
+    HistoricalDataAdminController --> HistoricalDataManager
+    HistoricalDataAdminController --> SymbolManager
+    HistoricalDataAdminController --> DataQualityChecker
+    HistoricalDataAdminController --> DownloadJobManager
+    HistoricalDataAdminController --> DataDeletionManager
+    HistoricalDataAdminController --> DownloadCoordinator
+    HistoricalDataAdminController ..> AdminSymbolFilters
+    HistoricalDataAdminController ..> QualityCheckRequest
+    HistoricalDataAdminController ..> DeleteDataRequest
+    HistoricalDataAdminController ..> JobFilters
+    HistoricalDataAdminController ..> IngestRequest
+    HistoricalDataAdminController ..> IngestResponse
+    HistoricalDataAdminController ..> DownloadStatus
+
+    %% Relationships - Admin Components
+    DataQualityChecker --> IHistoricalDataRepository
+    DataQualityChecker --> DataValidator
+    DataQualityChecker ..> QualityCheckRequest
+    DataQualityChecker ..> QualityCheckResult
+
+    DownloadJobManager ..> JobFilters
+    DownloadJobManager ..> DownloadJobDetails
+
+    DataDeletionManager --> IHistoricalDataRepository
+    DataDeletionManager --> ICacheManager
+    DataDeletionManager ..> DeleteDataRequest
+    DataDeletionManager ..> DeletionResult
+
+    HistoricalDataManager --> IHistoricalDataRepository
+    HistoricalDataManager --> BrokerServiceClient
+    HistoricalDataManager --> DataValidator
+    HistoricalDataManager --> DataRangeManager
+    HistoricalDataManager ..> OHLCV
+
+    DataQueryService --> IHistoricalDataRepository
+    DataQueryService --> ICacheManager
+    DataQueryService --> TimeframeAggregator
+    DataQueryService ..> OHLCV
+    DataQueryService ..> QueryFilters
+
+    TimeframeAggregator ..> OHLCV
+
+    DataRangeManager --> IHistoricalDataRepository
+    DataRangeManager ..> DataRange
+
+    SymbolManager --> IHistoricalDataRepository
+    SymbolManager --> BrokerServiceClient
+    SymbolManager ..> SymbolMetadata
+
+    DataValidator ..> OHLCV
+    DataValidator ..> ValidationResult
+    DataValidator ..> Anomaly
+    DataValidator ..> ValidationConfig
+
+    DownloadCoordinator --> BrokerServiceClient
+    DownloadCoordinator --> HistoricalDataManager
+    DownloadCoordinator --> IHistoricalDataRepository
+    DownloadCoordinator ..> DownloadStatus
+
+    HistoricalDataRepository ..|> IHistoricalDataRepository
+    HistoricalDataRepository ..> OHLCV
+    HistoricalDataRepository ..> SymbolMetadata
+    HistoricalDataRepository ..> DataRange
+    HistoricalDataRepository ..> QualityCheck
+
+    CacheManager ..|> ICacheManager
+
+    OHLCV --> QualityStatus
+    QualityCheck --> CheckType
+
+    IHistoricalDataRepository ..> QualityStats
+
+    Note: "Historical Data Service - 1-Minute Storage Architecture\n============================================================\n\nKEY DESIGN DECISION:\n- All OHLCV data is stored in 1-minute (1m) timeframe ONLY\n- Higher timeframes (5m, 15m, 1h, 4h, 1d) are computed on-the-fly\n- Uses TimescaleDB time_bucket() for efficient aggregation\n- See PROC-HISTORICAL-001 and PROC-HISTORICAL-002\n\nBenefits:\n- Single source of truth - no data inconsistency\n- Reduced storage - no duplicate data\n- Flexible - any timeframe can be computed\n- Simplified ingestion and quality checks\n\nAdmin functionality:\n- List/view downloaded symbols and data ranges\n- Delete historical data (symbol or date range - no timeframe option)\n- Run data quality checks (on 1m data)\n- View and cancel download jobs\n\nDownloads coordinated through Broker Service.\nTimescaleDB compression is automatic."

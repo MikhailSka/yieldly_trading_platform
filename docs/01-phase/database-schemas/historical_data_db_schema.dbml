@@ -1,0 +1,219 @@
+// Yieldly Historical Data Database Schema
+// Database: historical_db (TimescaleDB - PostgreSQL extension)
+//
+// IMPORTANT: 1-Minute Storage Architecture
+// -----------------------------------------
+// All OHLCV data is stored in 1-minute (1m) timeframe ONLY.
+// Higher timeframes (5m, 15m, 1h, 4h, 1d) are computed on-the-fly during retrieval
+// using TimescaleDB's time_bucket() function.
+//
+// Benefits:
+// - Single source of truth - no data inconsistency between timeframes
+// - Reduced storage - no duplicate data across multiple timeframes
+// - Flexible - any timeframe can be computed from 1m data
+// - Simplified ingestion - only one timeframe to download and validate
+//
+// The 'timeframe' column exists in tables for schema flexibility but will always
+// contain '1m' in practice. See PROC-HISTORICAL-001 and PROC-HISTORICAL-002.
+
+// Enums
+Enum exchange_type {
+  bybit
+  binance
+}
+
+Enum data_quality_status {
+  valid       // Data passed validation
+  suspicious  // Data has anomalies but usable
+  invalid     // Data failed validation
+}
+
+// OHLCV Candlestick Data (Hypertable)
+Table ohlcv_data {
+  id bigserial [pk, note: 'Auto-incrementing ID for internal use']
+  
+  // Time dimension (partition key for TimescaleDB)
+  timestamp timestamptz [not null, note: 'Candle open time in UTC']
+  
+  // Market identification
+  exchange exchange_type [not null]
+  symbol varchar(50) [not null, note: 'Trading pair, e.g., BTCUSDT']
+  timeframe varchar(10) [not null, note: 'Always "1m" - higher timeframes computed on retrieval']
+  
+  // OHLCV data
+  open decimal(20, 8) [not null]
+  high decimal(20, 8) [not null]
+  low decimal(20, 8) [not null]
+  close decimal(20, 8) [not null]
+  volume decimal(30, 8) [not null]
+  
+  // Additional metrics
+  quote_volume decimal(30, 8) [null, note: 'Volume in quote currency']
+  number_of_trades int [null]
+  taker_buy_base_volume decimal(30, 8) [null]
+  taker_buy_quote_volume decimal(30, 8) [null]
+  
+  // Data quality
+  quality_status data_quality_status [default: 'valid']
+  quality_score decimal(3, 2) [null, note: '0.00 to 1.00 - higher is better']
+  
+  // Metadata
+  source_broker_connection_id uuid [null, note: 'Which connection downloaded this data']
+  ingested_at timestamptz [not null, default: `now()`]
+  
+  Indexes {
+    timestamp [name: 'idx_ohlcv_timestamp', note: 'Primary time index']
+    (exchange, symbol, timeframe, timestamp) [unique, name: 'idx_ohlcv_unique']
+    (symbol, timeframe, timestamp) [name: 'idx_ohlcv_query']
+    exchange [name: 'idx_ohlcv_exchange']
+    quality_status [name: 'idx_ohlcv_quality']
+  }
+  
+  Note: '''
+  TimescaleDB Configuration:
+  - Convert to hypertable: SELECT create_hypertable('ohlcv_data', 'timestamp', chunk_time_interval => INTERVAL '1 week');
+  - Enable compression: ALTER TABLE ohlcv_data SET (timescaledb.compress, timescaledb.compress_segmentby = 'exchange,symbol,timeframe');
+  - Compression policy: SELECT add_compression_policy('ohlcv_data', INTERVAL '30 days');
+  - Retention policy: SELECT add_retention_policy('ohlcv_data', INTERVAL '5 years');
+  '''
+}
+
+// Symbol Metadata Cache
+Table symbols_metadata {
+  id uuid [pk, default: `gen_random_uuid()`]
+  
+  exchange exchange_type [not null]
+  symbol varchar(50) [not null]
+  
+  // Symbol details
+  base_asset varchar(20) [not null]
+  quote_asset varchar(20) [not null]
+  
+  // Data availability
+  available_timeframes varchar(200) [null, note: 'Always "1m" - higher timeframes computed on retrieval']
+  earliest_data_timestamp timestamptz [null]
+  latest_data_timestamp timestamptz [null]
+  
+  // Statistics
+  total_candles_count bigint [default: 0]
+  data_completeness_percentage decimal(5, 2) [null, note: 'Percentage of expected candles present']
+  
+  // Status
+  is_active boolean [default: true]
+  is_delisted boolean [default: false]
+  delisted_at timestamptz [null]
+  
+  // Last update
+  last_synced_at timestamptz [not null, default: `now()`]
+  
+  // Audit
+  created_at timestamp [not null, default: `now()`]
+  updated_at timestamp [not null, default: `now()`]
+  
+  Indexes {
+    (exchange, symbol) [unique]
+    base_asset
+    quote_asset
+    is_active
+    last_synced_at
+  }
+}
+
+// Symbol Data Ranges (tracks available data, not gaps)
+// Note: Only 1m timeframe data ranges are stored
+Table symbol_data_ranges {
+  id uuid [pk, default: `gen_random_uuid()`]
+
+  exchange exchange_type [not null]
+  symbol varchar(50) [not null]
+  timeframe varchar(10) [not null, note: 'Always "1m" - only 1m data is stored']
+  
+  // Available data range
+  start_timestamp timestamptz [not null, note: 'First available candle timestamp']
+  end_timestamp timestamptz [not null, note: 'Last available candle timestamp']
+  
+  // Statistics
+  candle_count bigint [not null, default: 0]
+  
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+  
+  Indexes {
+    (exchange, symbol, timeframe, start_timestamp, end_timestamp)
+    (exchange, symbol, timeframe)
+  }
+  
+  Note: '''
+  Tracks continuous ranges of available data.
+  After download, merge adjacent/overlapping ranges.
+  Query coverage: Check if requested range falls within any stored range.
+  
+  Example SQL function to update ranges after download:
+  CREATE OR REPLACE FUNCTION merge_data_ranges(
+    p_exchange exchange_type,
+    p_symbol varchar,
+    p_timeframe varchar,
+    p_start timestamptz,
+    p_end timestamptz,
+    p_candle_count bigint
+  ) RETURNS void AS $$
+  BEGIN
+    -- Delete overlapping ranges and insert merged range
+    WITH overlapping AS (
+      DELETE FROM symbol_data_ranges
+      WHERE exchange = p_exchange
+        AND symbol = p_symbol
+        AND timeframe = p_timeframe
+        AND (
+          (start_timestamp <= p_end AND end_timestamp >= p_start)
+          OR (start_timestamp <= p_end + interval '1' || p_timeframe AND end_timestamp >= p_start - interval '1' || p_timeframe)
+        )
+      RETURNING start_timestamp, end_timestamp, candle_count
+    )
+    INSERT INTO symbol_data_ranges (exchange, symbol, timeframe, start_timestamp, end_timestamp, candle_count)
+    SELECT 
+      p_exchange,
+      p_symbol,
+      p_timeframe,
+      LEAST(p_start, COALESCE((SELECT MIN(start_timestamp) FROM overlapping), p_start)),
+      GREATEST(p_end, COALESCE((SELECT MAX(end_timestamp) FROM overlapping), p_end)),
+      p_candle_count + COALESCE((SELECT SUM(candle_count) FROM overlapping), 0);
+  END;
+  $$ LANGUAGE plpgsql;
+  '''
+}
+
+// Data Quality Checks
+// Note: Quality checks are performed on 1m data only
+Table data_quality_checks {
+  id uuid [pk, default: `gen_random_uuid()`]
+
+  exchange exchange_type [not null]
+  symbol varchar(50) [not null]
+  timeframe varchar(10) [not null, note: 'Always "1m" - quality checks on source data']
+  
+  // Check configuration
+  check_type varchar(50) [not null, note: 'price_spike, volume_anomaly, missing_data, duplicate_data']
+  check_timestamp timestamptz [not null, default: `now()`]
+  
+  // Time range checked
+  check_start_timestamp timestamptz [not null]
+  check_end_timestamp timestamptz [not null]
+  
+  // Results
+  issues_found int [default: 0]
+  issues_details jsonb [null, note: 'Details about found issues']
+  
+  // Resolution
+  auto_resolved boolean [default: false]
+  manual_review_required boolean [default: false]
+  
+  Indexes {
+    (exchange, symbol, timeframe)
+    check_type
+    check_timestamp
+    manual_review_required
+  }
+}
+

@@ -1,0 +1,456 @@
+// Yieldly Strategy Database Schema
+// Database: strategy_db (PostgreSQL)
+
+// Enums
+Enum strategy_status {
+  draft       // Work in progress, not ready for backtesting
+  active      // Ready to use
+  archived    // User archived but kept for history
+  deleted     // Soft deleted
+}
+
+Enum indicator_library {
+  talib       // TA-Lib technical analysis library
+  pandas_ta   // Pandas TA library (future)
+  custom      // Custom user indicators (future)
+}
+
+// Strategies (Main Table)
+Table strategies {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+  
+  // Strategy details
+  name varchar(255) [not null]
+  description text [null]
+  
+  // Strategy code
+  code text [not null, note: 'Python strategy code']
+  
+  // Status and visibility
+  status strategy_status [not null, default: 'draft']
+  is_template boolean [default: false, note: 'True for built-in example strategies']
+  is_public boolean [default: false, note: 'Future: Allow sharing strategies']
+  created_by_admin boolean [default: false, note: 'True if created by platform admin']
+  
+  // Version tracking
+  current_version_id uuid [null, note: 'Reference to strategy_versions.id - Latest version (admin continues editing here)']
+  template_version_id uuid [null, note: 'Reference to strategy_versions.id - Frozen version shown as template to all users']
+  published_version_id uuid [null, note: 'Reference to strategy_versions.id - Frozen version shown as public strategy to all users']
+  version_count int [default: 1, note: 'Total number of versions']
+  
+  // Media
+  image_url varchar(500) [null, note: 'Screenshot or thumbnail (Azure Blob Storage)']
+  
+  // Usage tracking
+  backtest_count int [default: 0, note: 'Number of times backtested']
+  last_backtested_at timestamptz [null]
+
+  // Audit
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+  deleted_at timestamptz [null, note: 'Soft delete timestamp']
+  
+  Indexes {
+    user_id
+    status
+    (user_id, status)
+    is_template
+    created_by_admin
+    name
+    created_at
+    updated_at
+  }
+  
+  Note: '''
+  Main strategies table. Each strategy belongs to a user.
+  Templates (is_template=true) are visible to all users as examples.
+  Soft delete: deleted_at != NULL
+
+  Version Control:
+  - current_version_id: Latest version, admin continues editing here
+  - template_version_id: Frozen version shown to users when browsing templates (is_template=true)
+  - published_version_id: Frozen version shown to users when viewing public strategies (is_public=true)
+
+  This separation ensures:
+  - Admins can experiment with new versions without breaking published templates
+  - Users always see stable, validated versions when browsing templates/public strategies
+  - Published versions remain unchanged until explicitly updated via PROC-STRATEGY-012
+  '''
+}
+
+// Strategy Versions (Version Control)
+Table strategy_versions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  strategy_id uuid [not null, ref: > strategies.id]
+  
+  // Version information
+  version_number int [not null, note: 'Sequential version number (1, 2, 3...)']
+  
+  // Version snapshot
+  code text [not null, note: 'Code snapshot at this version']
+  
+  // Version metadata
+  description text [null, note: 'What changed in this version']
+  created_by_user_id uuid [not null, note: 'User who created this version']
+  
+  // Timing
+  created_at timestamptz [not null, default: `now()`]
+  
+  Indexes {
+    strategy_id
+    (strategy_id, version_number) [unique]
+    created_at
+  }
+  
+  Note: '''
+  Immutable version history for strategies.
+  Every time a strategy is updated, a new version is created.
+  Users can restore previous versions.
+  Version 1 is created automatically when strategy is first saved.
+  '''
+}
+
+// Indicator Categories
+Table indicator_categories {
+  id uuid [pk, default: `gen_random_uuid()`]
+  
+  // Category details
+  name varchar(100) [not null, unique, note: 'e.g., Trend, Momentum, Volatility, Volume']
+  description text [null]
+  
+  // Display
+  display_order int [not null, default: 0, note: 'Order to display in UI']
+  icon varchar(100) [null, note: 'Icon identifier for UI']
+  
+  // Audit
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+  
+  Indexes {
+    name [unique]
+    display_order
+  }
+  
+  Note: '''
+  Categories for organizing technical indicators.
+  Standard categories: Trend, Momentum, Volatility, Volume, Overlap Studies
+  '''
+}
+
+// Indicators (Technical Indicators from TA-Lib)
+Table indicators {
+  id uuid [pk, default: `gen_random_uuid()`]
+  category_id uuid [not null, ref: > indicator_categories.id]
+  
+  // Indicator identification
+  name varchar(100) [not null, note: 'Internal library name, e.g., SMA, RSI, MACD, bollinger_bands']
+  display_name varchar(255) [not null, note: 'User-friendly display name, e.g., "Bollinger Bands", "Simple Moving Average"']
+  full_name varchar(255) [not null, note: 'Full technical name, e.g., Simple Moving Average']
+  library indicator_library [not null, default: 'talib']
+  
+  // Description and usage
+  description text [null, note: 'What this indicator measures']
+  usage_example text [null, note: 'Code example showing how to use']
+  common_use_cases text [null, note: 'When traders typically use this indicator']
+  
+  // Status
+  is_active boolean [default: true, note: 'Can be used in strategies']
+  
+  // Technical specification (from TA-Lib/Backtesting Service)
+  technical_spec jsonb [not null, note: 'Parameters, inputs, outputs, function signature']
+  
+  // User-friendly metadata
+  popular_periods jsonb [null, note: 'Commonly used period values, e.g., [14, 20, 50] for SMA']
+  typical_thresholds jsonb [null, note: 'Common threshold values, e.g., RSI: {overbought: 70, oversold: 30}']
+  
+  // Sync metadata
+  last_synced_at timestamptz [null, note: 'When synced from Backtesting Service']
+  
+  // Audit
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+  
+  Indexes {
+    (name, library) [unique]
+    category_id
+    library
+    is_active
+    last_synced_at
+    display_name
+  }
+  
+  Note: '''
+  Technical indicators available for use in strategies.
+  Synced from Backtesting Service (which exposes TA-Lib indicators).
+
+  Name fields explained:
+  - name: Internal library identifier (e.g., "bollinger_bands", "SMA") - used in code
+  - display_name: User-friendly name (e.g., "Bollinger Bands", "Simple Moving Average") - shown in UI
+  - full_name: Full technical name from library
+
+  Unique constraint on (name, library) allows same indicator from different libraries.
+
+  technical_spec JSONB structure:
+  {
+    "parameters": [
+      {"name": "period", "type": "int", "default": 14, "min": 1, "max": 200}
+    ],
+    "inputs": ["close"],
+    "outputs": ["sma"],
+    "function": "talib.SMA"
+  }
+
+  Cached in Redis for fast access during strategy validation.
+  '''
+}
+
+// Strategy Indicator Usage (Many-to-Many)
+Table strategy_indicator_usage {
+  id uuid [pk, default: `gen_random_uuid()`]
+  strategy_id uuid [not null, ref: > strategies.id]
+  indicator_id uuid [not null, ref: > indicators.id]
+  
+  // Usage tracking
+  first_used_at timestamptz [not null, default: `now()`]
+  
+  Indexes {
+    strategy_id
+    indicator_id
+    (strategy_id, indicator_id) [unique]
+  }
+  
+  Note: '''
+  Tracks which indicators are used in which strategies.
+  Populated automatically during strategy validation.
+  Used for:
+  - Showing "Indicators used" on strategy cards
+  - Analytics: most popular indicators
+  - Dependency tracking if indicator definitions change
+  '''
+}
+
+// Code Validation Results Cache
+Table validation_cache {
+  id uuid [pk, default: `gen_random_uuid()`]
+  
+  // Code identification (hash of code)
+  code_hash varchar(64) [not null, unique, note: 'SHA-256 hash of strategy code']
+  
+  // Validation result
+  is_valid boolean [not null]
+  validation_errors jsonb [null, note: 'List of validation errors']
+  validation_warnings jsonb [null, note: 'List of validation warnings']
+  
+  // Indicators detected
+  indicators_used jsonb [null, note: 'List of indicator names detected in code']
+  
+  // Cache metadata
+  validated_at timestamptz [not null, default: `now()`]
+  expires_at timestamptz [not null, note: 'Cache expiration (e.g., 24 hours)']
+  
+  Indexes {
+    code_hash [unique]
+    expires_at
+  }
+  
+  Note: '''
+  Caches code validation results to avoid re-validating identical code.
+  TTL: 24 hours
+  Cleaned up automatically via expires_at.
+  '''
+}
+
+// Strategy Usage Statistics
+Table strategy_statistics {
+  strategy_id uuid [pk, ref: - strategies.id]
+  
+  // Usage metrics
+  view_count int [default: 0]
+  clone_count int [default: 0, note: 'Future: number of times copied by other users']
+  backtest_count int [default: 0]
+  
+  // Performance metrics (from latest backtest)
+  latest_backtest_return decimal(10, 4) [null, note: 'Latest backtest return percentage']
+  latest_backtest_sharpe decimal(10, 4) [null, note: 'Latest backtest Sharpe ratio']
+  latest_backtested_at timestamptz [null]
+  
+  // Average performance (across all backtests)
+  avg_return decimal(10, 4) [null]
+  avg_sharpe decimal(10, 4) [null]
+  total_backtests int [default: 0]
+  
+  // Metadata
+  updated_at timestamptz [not null, default: `now()`]
+  
+  Note: '''
+  Aggregated statistics for each strategy.
+  Updated when:
+  - Strategy is viewed
+  - Strategy is cloned (future)
+  - Backtest completes
+  
+  Used for:
+  - Sorting by popularity
+  - Showing performance on strategy cards
+  '''
+}
+
+// Strategy Favorites
+Table strategy_favorites {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+  strategy_id uuid [not null, ref: > strategies.id]
+
+  // Metadata
+  favorited_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    user_id
+    strategy_id
+    (user_id, strategy_id) [unique]
+  }
+
+  Note: '''
+  Users can favorite/bookmark strategies for quick access.
+  '''
+}
+
+// Indicator Favorites
+Table indicator_favorites {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+  indicator_id uuid [not null, ref: > indicators.id]
+
+  // Metadata
+  favorited_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    user_id
+    indicator_id
+    (user_id, indicator_id) [unique]
+  }
+
+  Note: '''
+  Users can favorite indicators for quick access in strategy editor.
+  Shown at top of indicator picker.
+  '''
+}
+
+// Strategy Audit Log
+Table strategy_events {
+  id uuid [pk, default: `gen_random_uuid()`]
+  strategy_id uuid [not null, ref: > strategies.id]
+  user_id uuid [not null, note: 'User who performed action']
+  
+  // Event details
+  event_type varchar(100) [not null, note: 'created, updated, deleted, restored, version_created, backtested, published_as_template, published_as_public, unpublished']
+  event_timestamp timestamptz [not null, default: `now()`]
+  
+  // Event data
+  event_description text [null]
+  event_metadata jsonb [null, note: 'Additional context like version number, changes made']
+  
+  Indexes {
+    strategy_id
+    user_id
+    event_type
+    event_timestamp
+    (strategy_id, event_timestamp)
+  }
+  
+  Note: '''
+  Audit trail for strategy lifecycle events.
+  Retention: 1 year
+  '''
+}
+
+// Tags (User and Public Tags for Strategies)
+Table tags {
+  id uuid [pk, default: `gen_random_uuid()`]
+
+  // Tag details
+  name varchar(50) [not null, note: 'Tag name, e.g., "trend-following", "high-risk", "scalping"']
+
+  // Ownership and visibility
+  created_by_user_id uuid [null, note: 'User who created this tag. NULL for system/admin tags']
+  is_public boolean [default: false, note: 'If true, visible to all users. If false, only visible to creator']
+
+  // Usage tracking
+  usage_count int [default: 0, note: 'Number of strategies using this tag']
+
+  // Audit
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    name
+    created_by_user_id
+    is_public
+    (name, created_by_user_id) [unique]
+    usage_count
+  }
+
+  Note: '''
+  Tags for categorizing and organizing strategies.
+
+  Tag Types:
+  1. Public tags (is_public=true, created_by_user_id can be NULL or admin):
+     - Created by admins for platform-wide categorization
+     - Visible to all users
+     - Examples: "trend-following", "mean-reversion", "scalping", "swing-trading"
+
+  2. Private tags (is_public=false, created_by_user_id not NULL):
+     - Created by individual users for personal organization
+     - Only visible to the creating user
+     - Examples: "my-favorites", "experimental", "high-priority"
+
+  Tag Autocomplete:
+  - When user types a tag, show:
+    1. All public tags matching the input
+    2. User's own private tags matching the input
+    3. Option to "Create new tag: {input}"
+
+  Admin Management:
+  - Admins can create public tags via PROC-STRATEGY-017
+  - Admins can convert user tags to public tags
+  - Admins can merge duplicate tags
+
+  Usage count is incremented/decremented when strategies are tagged/untagged.
+  '''
+}
+
+// Strategy Tags (Many-to-Many Junction Table)
+Table strategy_tags {
+  id uuid [pk, default: `gen_random_uuid()`]
+  strategy_id uuid [not null, ref: > strategies.id]
+  tag_id uuid [not null, ref: > tags.id]
+
+  // Metadata
+  tagged_at timestamptz [not null, default: `now()`]
+  tagged_by_user_id uuid [not null, note: 'User who added this tag to the strategy']
+
+  Indexes {
+    strategy_id
+    tag_id
+    (strategy_id, tag_id) [unique]
+    tagged_at
+  }
+
+  Note: '''
+  Junction table linking strategies to tags.
+  A strategy can have multiple tags.
+  A tag can be applied to multiple strategies.
+
+  When a tag is added:
+  1. Record is created in strategy_tags
+  2. tags.usage_count is incremented
+
+  When a tag is removed:
+  1. Record is deleted from strategy_tags
+  2. tags.usage_count is decremented
+
+  Users can only tag their own strategies.
+  Admins can tag any strategy.
+  '''
+}

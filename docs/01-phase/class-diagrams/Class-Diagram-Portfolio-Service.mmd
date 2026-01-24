@@ -1,0 +1,1062 @@
+classDiagram
+    %% ============================================
+    %% PORTFOLIO SERVICE
+    %% ============================================
+
+    %% Controllers
+    class PortfolioController {
+        -aggregator: PortfolioAggregator
+        -chartGenerator: ChartGenerator
+        -repository: IPortfolioRepository
+        +GetPortfolio(userID: UUID) PortfolioResponse
+        +GetAssets(userID: UUID, filters: AssetFilters) UnifiedAssetResponse
+        +GetTransactions(userID: UUID, filters: TransactionFilters) PaginatedTransactionResponse
+        +GetPerformance(userID: UUID, period: string) PerformanceResponse
+        +GetPnL(userID: UUID) PnLResponse
+        +GetRiskMetrics(userID: UUID) RiskMetricsResponse
+        +GetCharts(userID: UUID, period: string) ChartDataResponse
+        +GetHistory(userID: UUID, from: Time, to: Time, interval: string) HistoryResponse
+        +RefreshPortfolio(userID: UUID) PortfolioResponse
+        +CreateManualAsset(userID: UUID, request: CreateManualAssetRequest) ManualAssetResponse
+        +UpdateManualAsset(userID: UUID, assetID: UUID, request: UpdateManualAssetRequest) ManualAssetResponse
+        +DeleteManualAsset(userID: UUID, assetID: UUID, confirm: bool) DeleteResponse
+    }
+
+    %% Core Logic
+    class PortfolioAggregator {
+        -brokerClient: BrokerServiceClient
+        -pnlCalculator: PnLCalculator
+        -riskAnalyzer: RiskAnalyzer
+        -cacheManager: ICacheManager
+        -notificationPublisher: NotificationPublisher
+        -repository: IPortfolioRepository
+        +AggregatePortfolio(userID: UUID, connections: List~BrokerConnection~) Portfolio
+        +GetCurrentState(userID: UUID) Portfolio
+        -fetchFromBroker(connection: BrokerConnection) ExchangePortfolio
+        -fetchManualAssets(userID: UUID) List~ManualAsset~
+        -fetchManualAssetPrices(assets: List~ManualAsset~) Map~string,float~
+        -normalizeAssets(exchangePortfolios: List~ExchangePortfolio~, manualAssets: List~ManualAsset~) List~Asset~
+        -calculateTotalValue(assets: List~Asset~) float
+        -groupBySource(assets: List~Asset~) AssetBreakdown
+    }
+
+    class BrokerServiceClient {
+        -httpClient: HTTPClient
+        -baseURL: string
+        -timeout: Duration
+        +GetPortfolioData(broker: string, connectionID: UUID) PortfolioData
+        +GetBatchPrices(symbols: List~string~) Map~string,PriceData~
+        +GetHistoricalData(broker: string, symbol: string, interval: string, from: Time?, to: Time?) List~OHLCV~
+        -buildRequest(endpoint: string, params: Map) HTTPRequest
+        -handleResponse(response: HTTPResponse) Result
+    }
+
+    class PnLCalculator {
+        -repository: IPortfolioRepository
+        +CalculateRealized(transactions: List~Transaction~) float
+        +CalculateUnrealized(assets: List~Asset~, currentPrices: Map~string,float~) float
+        +CalculateTotalPnL(portfolio: Portfolio) PnLResult
+        +CalculateManualAssetPnL(asset: ManualAsset, currentPrice: float) PnLResult
+        -getCostBasis(asset: Asset, transactions: List~Transaction~) float
+        -getAverageEntryPrice(transactions: List~Transaction~) float
+    }
+
+    class RiskAnalyzer {
+        -repository: IPortfolioRepository
+        +CalculateDrawdown(snapshots: List~PortfolioSnapshot~) DrawdownResult
+        +CalculateVolatility(snapshots: List~PortfolioSnapshot~) float
+        +CalculateSharpeRatio(snapshots: List~PortfolioSnapshot~, riskFreeRate: float) float
+        +AnalyzeRisk(portfolio: Portfolio, snapshots: List~PortfolioSnapshot~) RiskMetrics
+        -calculateReturns(snapshots: List~PortfolioSnapshot~) List~float~
+        -findPeakValue(snapshots: List~PortfolioSnapshot~) float
+    }
+
+    class ChartGenerator {
+        -repository: IPortfolioRepository
+        +GenerateEquityCurve(userID: UUID, period: string) ChartData
+        +GenerateAllocationChart(portfolio: Portfolio) ChartData
+        +GeneratePerformanceChart(snapshots: List~PortfolioSnapshot~, period: string) ChartData
+        -querySnapshots(userID: UUID, from: Time, to: Time) List~PortfolioSnapshot~
+        -formatForFrontend(data: any) ChartData
+    }
+
+    class SnapshotScheduler {
+        -aggregator: PortfolioAggregator
+        -repository: IPortfolioRepository
+        -ticker: Ticker
+        +Start() void
+        +Stop() void
+        -createSnapshot(userID: UUID) error
+        -createManualAssetValueHistory(userID: UUID) error
+        -cleanupOldSnapshots() error
+    }
+
+    class TransactionSyncScheduler {
+        -repository: IPortfolioRepository
+        -sessionManager: SessionManager
+        -brokerClient: BrokerServiceClient
+        -syncInterval: Duration
+        -sessionTimeout: Duration
+        +Start() void
+        +Stop() void
+        +TriggerManualSync(userID: UUID, exchange: string?) SyncResult
+        -syncForActiveUsers() void
+        -getActiveUserSessions() List~UserSession~
+        -syncUserTransactions(userID: UUID, connections: List~BrokerConnection~) SyncResult
+        -normalizeTransactions(rawTxns: List~RawTransaction~) List~Transaction~
+        -updateSyncLog(userID: UUID, result: SyncResult) void
+    }
+
+    class SessionManager {
+        -repository: IPortfolioRepository
+        -cacheManager: ICacheManager
+        -sessionTimeout: Duration
+        +CreateSession(userID: UUID, deviceType: string) UserSession
+        +UpdateActivity(userID: UUID) void
+        +EndSession(sessionID: UUID) void
+        +GetActiveSessions() List~UserSession~
+        +IsUserActive(userID: UUID) bool
+        -cleanupInactiveSessions() void
+    }
+
+    class NotificationPublisher {
+        -serviceBus: ServiceBusClient
+        +PublishDrawdownAlert(userID: UUID, drawdown: float) error
+        +PublishMilestoneReached(userID: UUID, milestone: string) error
+        +PublishPortfolioValueChange(userID: UUID, changePercent: float, period: string) error
+        +PublishPriceAlert(userID: UUID, alert: PriceAlert, currentPrice: float) error
+        +PublishPortfolioRefresh(userID: UUID) error
+        -buildMessage(event: Event) Message
+    }
+
+    %% Price Alerts
+    class PriceAlertController {
+        -alertManager: PriceAlertManager
+        -repository: IPriceAlertRepository
+        +CreateAlert(userID: UUID, request: CreatePriceAlertRequest) PriceAlertResponse
+        +ListAlerts(userID: UUID, filters: PriceAlertFilters) PaginatedPriceAlertResponse
+        +GetAlert(userID: UUID, alertID: UUID) PriceAlertDetailResponse
+        +UpdateAlert(userID: UUID, alertID: UUID, request: UpdatePriceAlertRequest) PriceAlertResponse
+        +PauseAlert(userID: UUID, alertID: UUID) PriceAlertResponse
+        +ResumeAlert(userID: UUID, alertID: UUID) PriceAlertResponse
+        +ResetAlert(userID: UUID, alertID: UUID) PriceAlertResponse
+        +DeleteAlert(userID: UUID, alertID: UUID) DeleteResponse
+    }
+
+    class PriceAlertManager {
+        -repository: IPriceAlertRepository
+        -marketDataClient: MarketDataClient
+        -notificationPublisher: NotificationPublisher
+        -maxAlertsPerUser: int
+        +CreateAlert(userID: UUID, request: CreatePriceAlertRequest) PriceAlert
+        +UpdateAlert(userID: UUID, alertID: UUID, request: UpdatePriceAlertRequest) PriceAlert
+        +GetAlertContext(alert: PriceAlert) AlertContext
+        +ValidateAlertLimit(userID: UUID) error
+        -enrichWithCurrentPrice(alerts: List~PriceAlert~) List~PriceAlertWithContext~
+    }
+
+    class PriceAlertScheduler {
+        -repository: IPriceAlertRepository
+        -marketDataClient: MarketDataClient
+        -notificationPublisher: NotificationPublisher
+        -checkInterval: Duration
+        +Start() void
+        +Stop() void
+        +CheckAlerts() void
+        -getActiveAlertsByAsset() Map~string,List~PriceAlert~~
+        -checkCrossesAbove(alert: PriceAlert, currentPrice: float, previousPrice: float) bool
+        -checkCrossesBelow(alert: PriceAlert, currentPrice: float, previousPrice: float) bool
+        -checkChangePercent(alert: PriceAlert, currentPrice: float, comparisonPrice: float) bool
+        -triggerAlert(alert: PriceAlert, currentPrice: float, comparisonPrice: float, changePercent: float) void
+        -recordTriggerHistory(alert: PriceAlert, triggerDetails: TriggerDetails) void
+        -checkCooldown(alert: PriceAlert) bool
+        -expireAlerts() void
+    }
+
+    class IPriceAlertRepository {
+        <<interface>>
+        +Create(alert: PriceAlert) PriceAlert
+        +FindByID(userID: UUID, alertID: UUID) PriceAlert
+        +FindByUserID(userID: UUID, filters: PriceAlertFilters) List~PriceAlert~
+        +FindActiveByAsset(asset: string) List~PriceAlert~
+        +FindAllActive() List~PriceAlert~
+        +Update(alert: PriceAlert) PriceAlert
+        +Delete(userID: UUID, alertID: UUID) error
+        +CountActive(userID: UUID) int
+        +UpdateStatus(alertID: UUID, status: PriceAlertStatus) error
+        +RecordTrigger(alertID: UUID, price: float) error
+        +SaveHistory(history: PriceAlertHistory) error
+        +GetHistory(alertID: UUID) List~PriceAlertHistory~
+        +ExpireOldAlerts() int
+    }
+
+    class PriceAlertRepository {
+        -db: Database
+        +Create(alert: PriceAlert) PriceAlert
+        +FindByID(userID: UUID, alertID: UUID) PriceAlert
+        +FindByUserID(userID: UUID, filters: PriceAlertFilters) List~PriceAlert~
+        +FindActiveByAsset(asset: string) List~PriceAlert~
+        +FindAllActive() List~PriceAlert~
+        +Update(alert: PriceAlert) PriceAlert
+        +Delete(userID: UUID, alertID: UUID) error
+        +CountActive(userID: UUID) int
+        +UpdateStatus(alertID: UUID, status: PriceAlertStatus) error
+        +RecordTrigger(alertID: UUID, price: float) error
+        +SaveHistory(history: PriceAlertHistory) error
+        +GetHistory(alertID: UUID) List~PriceAlertHistory~
+        +ExpireOldAlerts() int
+        -toPriceAlertModel(row: DatabaseRow) PriceAlert
+    }
+
+    class MarketDataClient {
+        -httpClient: HTTPClient
+        -baseURL: string
+        +GetCurrentPrice(asset: string) PriceData
+        +GetBatchPrices(assets: List~string~) Map~string,PriceData~
+        +GetHistoricalPrice(asset: string, timestamp: Time) PriceData
+        +GetPriceChange(asset: string, period: string) PriceChangeData
+    }
+
+    class PriceAlert {
+        +ID: UUID
+        +UserID: UUID
+        +Asset: string
+        +AlertType: PriceAlertType
+        +TargetValue: float
+        +ComparisonPeriod: string
+        +Status: PriceAlertStatus
+        +IsRecurring: bool
+        +TriggeredCount: int
+        +LastTriggeredAt: Time
+        +LastTriggeredPrice: float
+        +CooldownHours: int
+        +NotifyEmail: bool
+        +NotifyInApp: bool
+        +NotifyPush: bool
+        +ExpiresAt: Time
+        +Notes: string
+        +CreatedAt: Time
+        +UpdatedAt: Time
+    }
+
+    class PriceAlertHistory {
+        +ID: UUID
+        +AlertID: UUID
+        +UserID: UUID
+        +TriggeredAt: Time
+        +TriggerPrice: float
+        +ComparisonPrice: float
+        +ActualChangePercent: float
+        +EmailSent: bool
+        +InAppSent: bool
+        +PushSent: bool
+        +CreatedAt: Time
+    }
+
+    class CreatePriceAlertRequest {
+        +Asset: string
+        +AlertType: PriceAlertType
+        +TargetValue: float
+        +ComparisonPeriod: string
+        +IsRecurring: bool
+        +CooldownHours: int
+        +NotifyEmail: bool
+        +NotifyInApp: bool
+        +NotifyPush: bool
+        +ExpiresAt: Time
+        +Notes: string
+    }
+
+    class UpdatePriceAlertRequest {
+        +TargetValue: float
+        +ComparisonPeriod: string
+        +IsRecurring: bool
+        +CooldownHours: int
+        +NotifyEmail: bool
+        +NotifyInApp: bool
+        +NotifyPush: bool
+        +ExpiresAt: Time
+        +Notes: string
+    }
+
+    class PriceAlertFilters {
+        +Asset: string
+        +Status: PriceAlertStatus
+        +AlertType: PriceAlertType
+        +Page: int
+        +PageSize: int
+    }
+
+    class AlertContext {
+        +CurrentPrice: float
+        +PercentToTarget: float
+        +PriceDirection: string
+    }
+
+    class PriceChangeData {
+        +Asset: string
+        +CurrentPrice: float
+        +ComparisonPrice: float
+        +ChangeAmount: float
+        +ChangePercent: float
+        +Period: string
+    }
+
+    class TriggerDetails {
+        +TriggerPrice: float
+        +ComparisonPrice: float
+        +ChangePercent: float
+    }
+
+    class PriceAlertType {
+        <<enumeration>>
+        CROSSES_ABOVE
+        CROSSES_BELOW
+        CHANGE_PERCENT
+    }
+
+    class PriceAlertStatus {
+        <<enumeration>>
+        ACTIVE
+        TRIGGERED
+        PAUSED
+        EXPIRED
+    }
+
+    %% Portfolio Alert Preferences
+    class AlertPreferencesController {
+        -repository: IAlertPreferencesRepository
+        +GetPreferences(userID: UUID) AlertPreferencesResponse
+        +UpdatePreferences(userID: UUID, request: UpdateAlertPreferencesRequest) AlertPreferencesResponse
+    }
+
+    class IAlertPreferencesRepository {
+        <<interface>>
+        +GetByUserID(userID: UUID) PortfolioAlertPreferences
+        +Upsert(preferences: PortfolioAlertPreferences) PortfolioAlertPreferences
+        +UpdateLastAlertTime(userID: UUID, alertType: string) error
+    }
+
+    class PortfolioAlertPreferences {
+        +UserID: UUID
+        +EnableDrawdownAlerts: bool
+        +DrawdownAlertThreshold: float
+        +EnableValueChangeAlerts: bool
+        +ValueChangeThresholdPercent: float
+        +ValueChangePeriod: string
+        +EnableValueAlerts: bool
+        +ValueAlertThresholdUSD: float
+        +EnableDailySummary: bool
+        +DailySummaryTime: string
+        +AlertViaEmail: bool
+        +AlertViaInApp: bool
+        +AlertViaPush: bool
+        +AlertCooldownHours: int
+        +LastDrawdownAlertAt: Time
+        +LastValueChangeAlertAt: Time
+        +LastValueAlertAt: Time
+        +CreatedAt: Time
+        +UpdatedAt: Time
+    }
+
+    class UpdateAlertPreferencesRequest {
+        +DrawdownAlerts: DrawdownAlertConfig
+        +ValueChangeAlerts: ValueChangeAlertConfig
+        +ValueAlerts: ValueAlertConfig
+        +DailySummary: DailySummaryConfig
+        +AlertChannels: AlertChannelsConfig
+        +CooldownHours: int
+    }
+
+    class DrawdownAlertConfig {
+        +Enabled: bool
+        +ThresholdPercent: float
+    }
+
+    class ValueChangeAlertConfig {
+        +Enabled: bool
+        +ThresholdPercent: float
+        +Period: string
+    }
+
+    class ValueAlertConfig {
+        +Enabled: bool
+        +ThresholdUSD: float
+    }
+
+    class DailySummaryConfig {
+        +Enabled: bool
+        +Time: string
+    }
+
+    class AlertChannelsConfig {
+        +Email: bool
+        +InApp: bool
+        +Push: bool
+    }
+
+    %% Repository
+    class IPortfolioRepository {
+        <<interface>>
+        +SaveSnapshot(snapshot: PortfolioSnapshot) error
+        +GetSnapshots(userID: UUID, from: Time, to: Time) List~PortfolioSnapshot~
+        +GetLatestSnapshot(userID: UUID) PortfolioSnapshot
+        +SaveTransaction(transaction: Transaction) error
+        +GetTransactions(userID: UUID, filters: TransactionFilters) PaginatedResult~Transaction~
+        +GetTransactionCount(userID: UUID, filters: TransactionFilters) int
+        +CleanupOldSnapshots(before: Time) error
+        +SaveAsset(asset: Asset) error
+        +GetAssets(userID: UUID) List~Asset~
+        +UpdateAsset(asset: Asset) error
+        +DeleteAsset(assetID: UUID) error
+        +CreateManualAsset(asset: ManualAsset) ManualAsset
+        +GetManualAssets(userID: UUID, filters: ManualAssetFilters) List~ManualAsset~
+        +GetManualAsset(userID: UUID, assetID: UUID) ManualAsset
+        +UpdateManualAsset(asset: ManualAsset) ManualAsset
+        +DeleteManualAsset(userID: UUID, assetID: UUID) error
+        +CountManualAssets(userID: UUID) int
+        +SaveManualAssetValueHistory(history: ManualAssetValueHistory) error
+        +GetManualAssetValueHistory(assetID: UUID, from: Time, to: Time) List~ManualAssetValueHistory~
+        +CreateSession(session: UserSession) UserSession
+        +GetActiveSessions() List~UserSession~
+        +UpdateSessionActivity(userID: UUID) error
+        +EndSession(sessionID: UUID) error
+        +GetSyncLog(userID: UUID) List~SyncLog~
+        +CreateSyncLog(log: SyncLog) SyncLog
+        +UpdateSyncLog(log: SyncLog) error
+    }
+
+    class PortfolioRepository {
+        -db: Database
+        +SaveSnapshot(snapshot: PortfolioSnapshot) error
+        +GetSnapshots(userID: UUID, from: Time, to: Time) List~PortfolioSnapshot~
+        +GetLatestSnapshot(userID: UUID) PortfolioSnapshot
+        +SaveTransaction(transaction: Transaction) error
+        +GetTransactions(userID: UUID, filters: TransactionFilters) PaginatedResult~Transaction~
+        +GetTransactionCount(userID: UUID, filters: TransactionFilters) int
+        +CleanupOldSnapshots(before: Time) error
+        +SaveAsset(asset: Asset) error
+        +GetAssets(userID: UUID) List~Asset~
+        +UpdateAsset(asset: Asset) error
+        +DeleteAsset(assetID: UUID) error
+        +CreateManualAsset(asset: ManualAsset) ManualAsset
+        +GetManualAssets(userID: UUID, filters: ManualAssetFilters) List~ManualAsset~
+        +GetManualAsset(userID: UUID, assetID: UUID) ManualAsset
+        +UpdateManualAsset(asset: ManualAsset) ManualAsset
+        +DeleteManualAsset(userID: UUID, assetID: UUID) error
+        +CountManualAssets(userID: UUID) int
+        +SaveManualAssetValueHistory(history: ManualAssetValueHistory) error
+        +GetManualAssetValueHistory(assetID: UUID, from: Time, to: Time) List~ManualAssetValueHistory~
+        +CreateSession(session: UserSession) UserSession
+        +GetActiveSessions() List~UserSession~
+        +UpdateSessionActivity(userID: UUID) error
+        +EndSession(sessionID: UUID) error
+        +GetSyncLog(userID: UUID) List~SyncLog~
+        +CreateSyncLog(log: SyncLog) SyncLog
+        +UpdateSyncLog(log: SyncLog) error
+        -toSnapshotModel(row: DatabaseRow) PortfolioSnapshot
+        -fromSnapshotModel(snapshot: PortfolioSnapshot) DatabaseRow
+        -toTransactionModel(row: DatabaseRow) Transaction
+        -fromTransactionModel(transaction: Transaction) DatabaseRow
+        -toManualAssetModel(row: DatabaseRow) ManualAsset
+        -fromManualAssetModel(asset: ManualAsset) DatabaseRow
+    }
+
+    %% Cache Manager
+    class ICacheManager {
+        <<interface>>
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+        +DeletePattern(pattern: string) error
+        +Exists(key: string) bool
+        +Incr(key: string) int
+    }
+
+    class CacheManager {
+        -redis: RedisClient
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+        +DeletePattern(pattern: string) error
+        +Exists(key: string) bool
+        +Incr(key: string) int
+        -buildKey(prefix: string, identifier: string) string
+        -serialize(data: any) string
+        -deserialize(data: string) any
+    }
+
+    %% Domain Models
+    class Portfolio {
+        +UserID: UUID
+        +TotalValueUSD: float
+        +TotalCostBasis: float
+        +RealizedPnL: float
+        +UnrealizedPnL: float
+        +TotalPnL: float
+        +Assets: List~Asset~
+        +Exchanges: List~ExchangePortfolio~
+        +ManualStorage: List~ManualStorageSummary~
+        +Summary: PortfolioSummary
+        +LastUpdated: Time
+        +GetROI() float
+        +GetAssetAllocation() Map~string,float~
+    }
+
+    class PortfolioSummary {
+        +ExchangeAssetsValue: float
+        +ExchangeAssetsCount: int
+        +ManualAssetsValue: float
+        +ManualAssetsCount: int
+        +TotalAssetsCount: int
+    }
+
+    class ManualStorageSummary {
+        +StorageType: StorageType
+        +StorageLocation: string
+        +ValueUSD: float
+        +Percentage: float
+    }
+
+    class Asset {
+        +AssetID: UUID
+        +UserID: UUID
+        +Symbol: string
+        +Name: string
+        +TotalQuantity: float
+        +ValueUSD: float
+        +Percentage: float
+        +AvgCostBasis: float
+        +UnrealizedPnL: float
+        +UnrealizedPnLPct: float
+        +Holdings: List~AssetHolding~
+    }
+
+    class AssetHolding {
+        +Source: AssetSource
+        +Location: string
+        +StorageType: StorageType
+        +Quantity: float
+        +ValueUSD: float
+        +PurchasePrice: float
+        +PurchaseDate: Time
+    }
+
+    class ManualAsset {
+        +ID: UUID
+        +UserID: UUID
+        +Asset: string
+        +AssetName: string
+        +Amount: float
+        +PurchasePriceUSD: float
+        +PurchaseDate: Time
+        +TotalCostUSD: float
+        +StorageType: StorageType
+        +StorageLocation: string
+        +WalletAddress: string
+        +Notes: string
+        +CreatedAt: Time
+        +UpdatedAt: Time
+    }
+
+    class ManualAssetValueHistory {
+        +ID: UUID
+        +ManualAssetID: UUID
+        +Amount: float
+        +PriceUSD: float
+        +ValueUSD: float
+        +SnapshotTimestamp: Time
+    }
+
+    class AssetFilters {
+        +Source: AssetSource
+        +Exchange: string
+        +StorageType: StorageType
+        +Asset: string
+        +GroupBy: string
+        +IncludeSmallBalances: bool
+        +SmallBalanceThreshold: float
+        +SortBy: string
+        +SortOrder: string
+        +Page: int
+        +PageSize: int
+    }
+
+    class UnifiedHolding {
+        +ID: string
+        +Asset: string
+        +AssetName: string
+        +Amount: float
+        +CurrentPriceUSD: float
+        +CurrentValueUSD: float
+        +Source: AssetSource
+        +Location: string
+        +StorageType: StorageType
+        +Exchange: string
+        +PurchasePriceUSD: float
+        +TotalCostUSD: float
+        +UnrealizedPnL: float
+        +UnrealizedPnLPct: float
+        +Percentage: float
+        +WalletAddress: string
+        +Notes: string
+        +CreatedAt: Time
+        +UpdatedAt: Time
+    }
+
+    class AssetSummary {
+        +TotalAssets: int
+        +TotalHoldings: int
+        +TotalValueUSD: float
+        +TotalCostBasis: float
+        +TotalUnrealizedPnL: float
+        +TotalUnrealizedPnLPct: float
+        +ExchangeAssetsValue: float
+        +ExchangeAssetsCount: int
+        +ManualAssetsValue: float
+        +ManualAssetsCount: int
+        +BySource: List~SourceBreakdown~
+        +ByAsset: List~AssetBreakdown~
+    }
+
+    class SourceBreakdown {
+        +Source: AssetSource
+        +Location: string
+        +StorageType: StorageType
+        +ValueUSD: float
+        +Percentage: float
+        +HoldingCount: int
+    }
+
+    class AssetBreakdown {
+        +Asset: string
+        +TotalAmount: float
+        +TotalValueUSD: float
+        +Percentage: float
+    }
+
+    class CreateManualAssetRequest {
+        +Asset: string
+        +AssetName: string
+        +Amount: float
+        +PurchasePriceUSD: float
+        +PurchaseDate: Time
+        +StorageType: StorageType
+        +StorageLocation: string
+        +WalletAddress: string
+        +Notes: string
+    }
+
+    class UpdateManualAssetRequest {
+        +AssetName: string
+        +Amount: float
+        +PurchasePriceUSD: float
+        +PurchaseDate: Time
+        +StorageType: StorageType
+        +StorageLocation: string
+        +WalletAddress: string
+        +Notes: string
+    }
+
+    class ExchangePortfolio {
+        +Exchange: string
+        +ConnectionID: UUID
+        +Balances: List~Balance~
+        +TotalValueUSD: float
+        +AssetCount: int
+        +LastSyncedAt: Time
+    }
+
+    class Balance {
+        +Asset: string
+        +Free: float
+        +Locked: float
+        +Total: float
+        +ValueUSD: float
+    }
+
+    class PortfolioSnapshot {
+        +SnapshotID: UUID
+        +UserID: UUID
+        +SnapshotType: SnapshotType
+        +Timestamp: Time
+        +TotalValueUSD: float
+        +TotalCostBasis: float
+        +RealizedPnL: float
+        +UnrealizedPnL: float
+        +AssetCount: int
+        +ExchangeCount: int
+        +SnapshotData: JSON
+        +Status: SnapshotStatus
+        +ExchangesIncluded: string
+        +ExchangesFailed: string
+        +CreatedAt: Time
+    }
+
+    class Transaction {
+        +TransactionID: UUID
+        +UserID: UUID
+        +Exchange: string
+        +ExchangeTransactionID: string
+        +Type: TransactionType
+        +Asset: string
+        +Amount: float
+        +PriceUSD: float
+        +ValueUSD: float
+        +FeeAmount: float
+        +FeeAsset: string
+        +FeeUSD: float
+        +TradePair: string
+        +Side: string
+        +TransactionTimestamp: Time
+        +SyncedAt: Time
+        +Notes: string
+    }
+
+    class TransactionFilters {
+        +Exchange: string
+        +Type: TransactionType
+        +Asset: string
+        +FromDate: Time
+        +ToDate: Time
+        +MinAmount: float
+        +MaxAmount: float
+        +SortBy: string
+        +SortOrder: string
+        +Page: int
+        +PageSize: int
+    }
+
+    class UserSession {
+        +ID: UUID
+        +UserID: UUID
+        +IsActive: bool
+        +LastActivityAt: Time
+        +SessionTokenHash: string
+        +DeviceType: string
+        +LastTransactionSyncAt: Time
+        +StartedAt: Time
+        +EndedAt: Time
+    }
+
+    class SyncLog {
+        +ID: UUID
+        +UserID: UUID
+        +SyncType: string
+        +SyncStartedAt: Time
+        +SyncCompletedAt: Time
+        +DurationMs: int
+        +Success: bool
+        +ExchangesSynced: string
+        +ExchangesFailed: string
+        +ErrorMessage: string
+        +SnapshotsCreated: int
+        +TransactionsImported: int
+    }
+
+    class SyncResult {
+        +SyncID: UUID
+        +Status: string
+        +Exchanges: List~ExchangeSyncResult~
+        +Summary: SyncSummary
+        +SyncedAt: Time
+    }
+
+    class ExchangeSyncResult {
+        +Exchange: string
+        +Status: string
+        +NewTransactions: int
+        +UpdatedTransactions: int
+        +SkippedDuplicates: int
+        +DateRange: DateRange
+        +Error: Error
+    }
+
+    class SyncSummary {
+        +TotalNewTransactions: int
+        +TotalUpdatedTransactions: int
+        +TotalSkippedDuplicates: int
+        +DurationMs: int
+    }
+
+    class PnLResult {
+        +RealizedPnL: float
+        +UnrealizedPnL: float
+        +TotalPnL: float
+        +ROI: float
+        +CostBasis: float
+        +CurrentValue: float
+    }
+
+    class RiskMetrics {
+        +MaxDrawdown: float
+        +MaxDrawdownPct: float
+        +CurrentDrawdown: float
+        +CurrentDrawdownPct: float
+        +Volatility: float
+        +SharpeRatio: float
+        +SortinoRatio: float
+        +BestDay: float
+        +BestDayDate: Time
+        +WorstDay: float
+        +WorstDayDate: Time
+        +WinRate: float
+        +CalculatedAt: Time
+    }
+
+    class DrawdownResult {
+        +MaxDrawdown: float
+        +MaxDrawdownPct: float
+        +CurrentDrawdown: float
+        +CurrentDrawdownPct: float
+        +PeakValue: float
+        +ValleyValue: float
+        +PeakDate: Time
+        +ValleyDate: Time
+        +RecoveryDate: Time
+        +IsRecovered: bool
+    }
+
+    class ChartData {
+        +ChartType: string
+        +Labels: List~string~
+        +Datasets: List~Dataset~
+        +Options: ChartOptions
+    }
+
+    class Dataset {
+        +Label: string
+        +Data: List~float~
+        +BackgroundColor: string
+        +BorderColor: string
+    }
+
+    class PerformanceData {
+        +Period: string
+        +StartValue: float
+        +EndValue: float
+        +AbsoluteChange: float
+        +PercentageChange: float
+        +HighValue: float
+        +LowValue: float
+        +Volatility: float
+    }
+
+    class OHLCV {
+        +Timestamp: Time
+        +Open: float
+        +High: float
+        +Low: float
+        +Close: float
+        +Volume: float
+    }
+
+    class PriceData {
+        +Symbol: string
+        +Price: float
+        +Timestamp: Time
+        +Change24h: float
+        +Change24hPct: float
+    }
+
+    %% Reference to Broker Service (external)
+    class BrokerConnection {
+        <<external>>
+        +ConnectionID: UUID
+        +UserID: UUID
+        +Exchange: string
+        +Status: ConnectionStatus
+    }
+
+    %% Enums
+    class TransactionType {
+        <<enumeration>>
+        TRADE
+        DEPOSIT
+        WITHDRAWAL
+        FEE
+        TRANSFER
+    }
+
+    class SnapshotType {
+        <<enumeration>>
+        HOURLY
+        DAILY
+        WEEKLY
+        MONTHLY
+        MANUAL
+    }
+
+    class SnapshotStatus {
+        <<enumeration>>
+        COMPLETE
+        PARTIAL
+        FAILED
+    }
+
+    class AssetSource {
+        <<enumeration>>
+        EXCHANGE
+        MANUAL
+    }
+
+    class StorageType {
+        <<enumeration>>
+        HARDWARE_WALLET
+        SOFTWARE_WALLET
+        PAPER_WALLET
+        COLD_STORAGE
+        OTHER_EXCHANGE
+        CUSTODIAL
+        OTHER
+    }
+
+    class ConnectionStatus {
+        <<enumeration>>
+        ACTIVE
+        INACTIVE
+        ERROR
+        PENDING
+    }
+
+    %% Relationships - Controllers
+    PortfolioController --> PortfolioAggregator
+    PortfolioController --> ChartGenerator
+    PortfolioController --> IPortfolioRepository
+    PortfolioController --> ICacheManager
+    PortfolioController ..> AssetFilters
+    PortfolioController ..> ManualAsset
+    PortfolioController ..> CreateManualAssetRequest
+    PortfolioController ..> UpdateManualAssetRequest
+
+    %% Relationships - Core Logic
+    PortfolioAggregator --> BrokerServiceClient
+    PortfolioAggregator --> PnLCalculator
+    PortfolioAggregator --> RiskAnalyzer
+    PortfolioAggregator --> ICacheManager
+    PortfolioAggregator --> NotificationPublisher
+    PortfolioAggregator --> IPortfolioRepository
+    PortfolioAggregator ..> Portfolio
+    PortfolioAggregator ..> ExchangePortfolio
+    PortfolioAggregator ..> ManualAsset
+    PortfolioAggregator ..> BrokerConnection
+
+    BrokerServiceClient ..> OHLCV
+    BrokerServiceClient ..> PriceData
+
+    PnLCalculator --> IPortfolioRepository
+    PnLCalculator ..> PnLResult
+    PnLCalculator ..> Transaction
+    PnLCalculator ..> ManualAsset
+
+    RiskAnalyzer --> IPortfolioRepository
+    RiskAnalyzer ..> RiskMetrics
+    RiskAnalyzer ..> DrawdownResult
+    RiskAnalyzer ..> PortfolioSnapshot
+
+    ChartGenerator --> IPortfolioRepository
+    ChartGenerator ..> PortfolioSnapshot
+    ChartGenerator ..> ChartData
+    ChartGenerator ..> Dataset
+    ChartGenerator ..> PerformanceData
+
+    SnapshotScheduler --> PortfolioAggregator
+    SnapshotScheduler --> IPortfolioRepository
+    SnapshotScheduler ..> PortfolioSnapshot
+    SnapshotScheduler ..> ManualAssetValueHistory
+
+    TransactionSyncScheduler --> IPortfolioRepository
+    TransactionSyncScheduler --> SessionManager
+    TransactionSyncScheduler --> BrokerServiceClient
+    TransactionSyncScheduler ..> SyncResult
+    TransactionSyncScheduler ..> SyncLog
+    TransactionSyncScheduler ..> UserSession
+
+    SessionManager --> IPortfolioRepository
+    SessionManager --> ICacheManager
+    SessionManager ..> UserSession
+
+    %% Relationships - Repository
+    PortfolioRepository ..|> IPortfolioRepository
+
+    CacheManager ..|> ICacheManager
+
+    %% Relationships - Domain Models
+    Portfolio --> Asset
+    Portfolio --> ExchangePortfolio
+    Portfolio --> ManualStorageSummary
+    Portfolio --> PortfolioSummary
+
+    Asset --> AssetHolding
+
+    AssetHolding --> AssetSource
+    AssetHolding --> StorageType
+
+    ManualAsset --> StorageType
+
+    ExchangePortfolio --> Balance
+
+    PortfolioSnapshot --> SnapshotType
+    PortfolioSnapshot --> SnapshotStatus
+
+    Transaction --> TransactionType
+
+    SyncResult --> ExchangeSyncResult
+    SyncResult --> SyncSummary
+
+    ChartData --> Dataset
+
+    UnifiedHolding --> AssetSource
+    UnifiedHolding --> StorageType
+
+    AssetSummary --> SourceBreakdown
+    AssetSummary --> AssetBreakdown
+
+    SourceBreakdown --> AssetSource
+    SourceBreakdown --> StorageType
+
+    AssetFilters --> AssetSource
+    AssetFilters --> StorageType
+
+    %% Relationships - Price Alerts
+    PriceAlertController --> PriceAlertManager
+    PriceAlertController --> IPriceAlertRepository
+    PriceAlertController ..> CreatePriceAlertRequest
+    PriceAlertController ..> UpdatePriceAlertRequest
+    PriceAlertController ..> PriceAlertFilters
+
+    PriceAlertManager --> IPriceAlertRepository
+    PriceAlertManager --> MarketDataClient
+    PriceAlertManager --> NotificationPublisher
+    PriceAlertManager ..> PriceAlert
+    PriceAlertManager ..> AlertContext
+
+    PriceAlertScheduler --> IPriceAlertRepository
+    PriceAlertScheduler --> MarketDataClient
+    PriceAlertScheduler --> NotificationPublisher
+    PriceAlertScheduler ..> PriceAlert
+    PriceAlertScheduler ..> TriggerDetails
+
+    PriceAlertRepository ..|> IPriceAlertRepository
+
+    MarketDataClient ..> PriceData
+    MarketDataClient ..> PriceChangeData
+
+    PriceAlert --> PriceAlertType
+    PriceAlert --> PriceAlertStatus
+
+    PriceAlertFilters --> PriceAlertType
+    PriceAlertFilters --> PriceAlertStatus
+
+    NotificationPublisher ..> PriceAlert
+
+    %% Relationships - Alert Preferences
+    AlertPreferencesController --> IAlertPreferencesRepository
+    AlertPreferencesController ..> UpdateAlertPreferencesRequest
+    AlertPreferencesController ..> PortfolioAlertPreferences
+
+    UpdateAlertPreferencesRequest --> DrawdownAlertConfig
+    UpdateAlertPreferencesRequest --> ValueChangeAlertConfig
+    UpdateAlertPreferencesRequest --> ValueAlertConfig
+    UpdateAlertPreferencesRequest --> DailySummaryConfig
+    UpdateAlertPreferencesRequest --> AlertChannelsConfig

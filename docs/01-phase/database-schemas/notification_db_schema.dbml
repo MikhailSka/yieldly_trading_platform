@@ -1,0 +1,551 @@
+// Yieldly Notification Database Schema
+// Database: notification_db (PostgreSQL)
+
+// Enums
+Enum notification_type {
+  // Backtest notifications
+  backtest_complete       // Backtest finished successfully
+  backtest_failed         // Backtest failed with error
+
+  // Portfolio notifications
+  portfolio_drawdown      // Portfolio drawdown threshold exceeded
+  portfolio_milestone     // Portfolio reached value milestone
+  portfolio_value_change  // Portfolio value changed significantly (e.g., +/- 10%)
+  price_alert             // Asset price crossed target threshold
+
+  // System notifications
+  system_update           // Platform maintenance or updates
+  system_broadcast        // Admin broadcast message to all users
+
+  // Account notifications
+  account_suspended       // User account suspended by admin
+  account_verified        // Email verified (from User Service)
+  password_reset          // Password reset confirmation
+  broker_connection_failed // Broker connection issue
+}
+
+Enum notification_priority {
+  low         // Informational
+  normal      // Standard notifications
+  high        // Important alerts
+  urgent      // Critical issues
+}
+
+Enum delivery_status {
+  pending     // Not yet sent
+  sent        // Successfully sent
+  failed      // Delivery failed
+  bounced     // Email bounced
+  opened      // Email opened (if tracking enabled)
+}
+
+Enum notification_channel {
+  email       // Email delivery
+  in_app      // In-app notification
+  push        // Push notification (future)
+}
+
+// In-App Notifications
+Table notifications {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+
+  // Notification content
+  type notification_type [not null]
+  priority notification_priority [not null, default: 'normal']
+
+  title varchar(255) [not null]
+  message text [not null]
+
+  // Additional data (context-specific)
+  data jsonb [null, note: 'Type-specific data like backtest_id, portfolio_value, etc.']
+
+  // Action link (optional)
+  action_url varchar(500) [null, note: 'Deep link to relevant page, e.g., /backtests/{id}']
+  action_label varchar(100) [null, note: 'Button text, e.g., "View Backtest"']
+
+  // Read tracking
+  is_read boolean [default: false]
+  read_at timestamptz [null]
+
+  // Expiration (optional)
+  expires_at timestamptz [null, note: 'Auto-delete after this time (optional)']
+
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    user_id
+    (user_id, is_read)
+    (user_id, created_at)
+    type
+    priority
+    created_at
+    expires_at
+  }
+
+  Note: '''
+  In-app notifications displayed in user interface.
+
+  data JSONB examples by type:
+
+  backtest_complete: {
+    "backtest_id": "uuid",
+    "strategy_name": "My Strategy",
+    "total_return": 15.5,
+    "sharpe_ratio": 1.2
+  }
+
+  portfolio_drawdown: {
+    "drawdown_percent": 12.5,
+    "current_value": 8750.00,
+    "peak_value": 10000.00
+  }
+
+  portfolio_value_change: {
+    "change_percent": -10.5,
+    "previous_value": 10000.00,
+    "current_value": 8950.00,
+    "period": "24h"
+  }
+
+  price_alert: {
+    "asset": "BTC",
+    "alert_type": "crosses_above",
+    "target_price": 50000.00,
+    "current_price": 50250.00
+  }
+
+  Retention: Keep for 90 days, then auto-delete
+  '''
+}
+
+// Notification Preferences
+Table notification_preferences {
+  user_id uuid [pk, note: 'Reference to users.id in user_db']
+
+  // Global toggles
+  email_enabled boolean [default: true]
+  in_app_enabled boolean [default: true]
+
+  // Per-type preferences (email)
+  email_backtest_complete boolean [default: true]
+  email_backtest_failed boolean [default: true]
+  email_portfolio_drawdown boolean [default: true]
+  email_portfolio_milestone boolean [default: false]
+  email_portfolio_value_change boolean [default: true]
+  email_price_alert boolean [default: true]
+  email_system_update boolean [default: true]
+  email_system_broadcast boolean [default: true]
+  email_account_suspended boolean [default: true]
+  email_broker_connection_failed boolean [default: true]
+
+  // Per-type preferences (in-app)
+  inapp_backtest_complete boolean [default: true]
+  inapp_backtest_failed boolean [default: true]
+  inapp_portfolio_drawdown boolean [default: true]
+  inapp_portfolio_milestone boolean [default: true]
+  inapp_portfolio_value_change boolean [default: true]
+  inapp_price_alert boolean [default: true]
+  inapp_system_update boolean [default: true]
+  inapp_system_broadcast boolean [default: true]
+  inapp_account_suspended boolean [default: true]
+  inapp_broker_connection_failed boolean [default: true]
+
+  // Quiet hours (optional feature)
+  enable_quiet_hours boolean [default: false]
+  quiet_hours_start time [null, note: 'Start of quiet period, e.g., 22:00:00']
+  quiet_hours_end time [null, note: 'End of quiet period, e.g., 08:00:00']
+  quiet_hours_timezone varchar(50) [default: 'UTC']
+
+  // Digest preferences (future feature)
+  enable_daily_digest boolean [default: false]
+  daily_digest_time time [default: '09:00:00']
+
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Note: '''
+  User notification preferences per channel and type.
+  Created automatically when user registers.
+  '''
+}
+
+// Email Delivery Log
+Table email_deliveries {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+  notification_id uuid [null, ref: > notifications.id, note: 'NULL if not linked to in-app notification']
+
+  // Email details
+  notification_type notification_type [not null]
+  recipient_email varchar(255) [not null]
+  subject varchar(500) [not null]
+
+  // SendGrid details
+  sendgrid_message_id varchar(255) [null, note: 'SendGrid message ID for tracking']
+  template_id varchar(100) [null, note: 'Template ID used (from notification_templates)']
+
+  // Delivery status
+  status delivery_status [not null, default: 'pending']
+
+  // Timing
+  sent_at timestamptz [null, note: 'When email was sent']
+  delivered_at timestamptz [null, note: 'When delivery was confirmed']
+  opened_at timestamptz [null, note: 'When email was opened (if tracking enabled)']
+
+  // Error handling
+  error_message text [null]
+  retry_count int [default: 0]
+  max_retries int [default: 3]
+
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    user_id
+    notification_id
+    notification_type
+    status
+    recipient_email
+    created_at
+    sent_at
+  }
+
+  Note: '''
+  Tracks all email deliveries for auditing and debugging.
+  Integrated with SendGrid webhooks for delivery status updates.
+  Retention: 90 days
+  '''
+}
+
+// Event Processing Log
+Table notification_events {
+  id uuid [pk, default: `gen_random_uuid()`]
+
+  // Event identification
+  event_id uuid [not null, unique, note: 'Unique event ID from message queue']
+  event_type notification_type [not null]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+
+  // Event data
+  event_data jsonb [not null, note: 'Raw event payload']
+
+  // Processing status
+  processed boolean [default: false]
+  processed_at timestamptz [null]
+
+  // Results
+  email_sent boolean [default: false]
+  inapp_created boolean [default: false]
+
+  // Error handling
+  error_message text [null]
+  retry_count int [default: 0]
+
+  // Timing
+  received_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    event_id [unique]
+    user_id
+    event_type
+    processed
+    received_at
+  }
+
+  Note: '''
+  Tracks event processing from message queue.
+  Used for:
+  - Ensuring exactly-once processing (via event_id)
+  - Debugging failed notifications
+  - Auditing notification pipeline
+
+  Retention: 30 days
+  '''
+}
+
+// Notification Type Configuration (Admin-managed)
+Table notification_types_config {
+  type notification_type [pk, note: 'Notification type enum value']
+
+  // Display information
+  display_name varchar(100) [not null, note: 'Human-readable name, e.g., "Portfolio Drawdown Alert"']
+  description text [null, note: 'Description of when this notification is sent']
+  category varchar(50) [not null, note: 'Category for grouping: portfolio, backtest, system, account']
+
+  // Visual
+  icon varchar(50) [null, note: 'Icon name for UI, e.g., "chart-down", "bell"']
+  color varchar(20) [null, note: 'Color code for UI, e.g., "#FF5733"']
+
+  // Default settings
+  default_priority notification_priority [default: 'normal']
+  default_email_enabled boolean [default: true]
+  default_inapp_enabled boolean [default: true]
+
+  // Availability
+  is_enabled boolean [default: true, note: 'Globally enable/disable this notification type']
+  is_user_configurable boolean [default: true, note: 'Whether users can toggle this type']
+
+  // Template requirements
+  requires_template boolean [default: true]
+  template_variables jsonb [null, note: 'List of available template variables for this type']
+
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    category
+    is_enabled
+  }
+
+  Note: '''
+  Admin-configurable metadata for each notification type.
+  Used to:
+  - Define available notification types and their behavior
+  - Provide UI configuration (icons, colors)
+  - Document template variables for each type
+
+  template_variables example:
+  {
+    "variables": [
+      {"name": "asset", "type": "string", "description": "Asset symbol"},
+      {"name": "current_price", "type": "number", "description": "Current price in USD"},
+      {"name": "target_price", "type": "number", "description": "Alert target price"}
+    ]
+  }
+  '''
+}
+
+// Notification Templates (Admin-editable)
+Table notification_templates {
+  id uuid [pk, default: `gen_random_uuid()`]
+
+  // Template identification
+  type notification_type [not null, unique]
+
+  // Version control
+  version int [not null, default: 1]
+  is_active boolean [default: true, note: 'Only one active version per type']
+
+  // Email template
+  email_subject_template varchar(500) [not null, note: 'Subject with placeholders, e.g., "Backtest Complete: {{strategy_name}}"']
+  email_body_template text [not null, note: 'HTML body with placeholders']
+  sendgrid_template_id varchar(100) [null, note: 'SendGrid template ID if using SendGrid templates instead']
+
+  // In-app template
+  title_template varchar(255) [not null]
+  message_template text [not null]
+
+  // Action
+  default_action_label varchar(100) [null]
+  action_url_template varchar(500) [null, note: 'URL with placeholders, e.g., "/backtests/{{backtest_id}}"']
+
+  // Priority
+  default_priority notification_priority [default: 'normal']
+
+  // Preview data for admin UI
+  preview_data jsonb [null, note: 'Sample data for template preview in admin UI']
+
+  // Audit trail
+  created_by uuid [null, note: 'Admin user who created this template']
+  updated_by uuid [null, note: 'Admin user who last updated this template']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    type [unique]
+    is_active
+    (type, version)
+  }
+
+  Note: '''
+  Admin-editable notification templates.
+
+  Template variables use Mustache/Handlebars syntax: {{variable}}
+
+  Example email_body_template:
+  <h1>Hello {{user_name}},</h1>
+  <p>Your backtest "{{strategy_name}}" has completed with a total return of {{total_return}}%.</p>
+  <p><a href="{{action_url}}">View Results</a></p>
+
+  preview_data example:
+  {
+    "user_name": "John Doe",
+    "strategy_name": "SMA Crossover",
+    "total_return": 15.5,
+    "action_url": "/backtests/123"
+  }
+  '''
+}
+
+// Template History (for audit/rollback)
+Table notification_template_history {
+  id uuid [pk, default: `gen_random_uuid()`]
+  template_id uuid [not null, ref: > notification_templates.id]
+
+  // Version at time of change
+  version int [not null]
+
+  // Snapshot of template at this version
+  email_subject_template varchar(500) [not null]
+  email_body_template text [not null]
+  title_template varchar(255) [not null]
+  message_template text [not null]
+  action_url_template varchar(500) [null]
+
+  // Change tracking
+  changed_by uuid [not null, note: 'Admin user who made this change']
+  change_reason varchar(500) [null, note: 'Optional reason for the change']
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    template_id
+    (template_id, version)
+    changed_by
+    created_at
+  }
+
+  Note: '''
+  History of template changes for audit and rollback.
+  Every template update creates a history record with the previous version.
+  '''
+}
+
+// Broadcast Notifications (Admin-sent to all/subset of users)
+Table broadcast_notifications {
+  id uuid [pk, default: `gen_random_uuid()`]
+
+  // Content
+  title varchar(255) [not null]
+  message text [not null]
+  priority notification_priority [default: 'normal']
+
+  // Targeting
+  target_all_users boolean [default: true]
+  target_user_ids uuid[] [null, note: 'Specific user IDs if not targeting all']
+  target_filter jsonb [null, note: 'Filter criteria like {"has_broker_connection": true}']
+
+  // Channels
+  send_email boolean [default: true]
+  send_in_app boolean [default: true]
+
+  // Scheduling
+  scheduled_at timestamptz [null, note: 'NULL = send immediately']
+
+  // Status
+  status varchar(20) [not null, default: 'draft', note: 'draft, scheduled, sending, sent, cancelled']
+  sent_at timestamptz [null]
+
+  // Statistics
+  total_recipients int [default: 0]
+  emails_sent int [default: 0]
+  inapp_created int [default: 0]
+
+  // Audit
+  created_by uuid [not null, note: 'Admin user who created this broadcast']
+  approved_by uuid [null, note: 'Admin user who approved (if approval required)']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    status
+    scheduled_at
+    created_by
+    created_at
+  }
+
+  Note: '''
+  Admin broadcast notifications sent to multiple users.
+
+  Use cases:
+  - System maintenance announcements
+  - New feature announcements
+  - Important policy updates
+
+  target_filter examples:
+  - {"has_broker_connection": true} - Users with connected brokers
+  - {"registered_after": "2024-01-01"} - Users who registered after date
+  - {"last_active_within_days": 30} - Recently active users
+  '''
+}
+
+// Notification Statistics (Aggregated Metrics)
+Table notification_statistics {
+  id uuid [pk, default: `gen_random_uuid()`]
+
+  // Time bucket
+  date date [not null, note: 'Statistics for this date']
+
+  // Notification type
+  notification_type notification_type [not null]
+
+  // Counts
+  total_sent int [default: 0]
+  email_sent int [default: 0]
+  inapp_created int [default: 0]
+
+  // Email metrics
+  emails_delivered int [default: 0]
+  emails_opened int [default: 0]
+  emails_failed int [default: 0]
+  emails_bounced int [default: 0]
+
+  // In-app metrics
+  inapp_read int [default: 0]
+  inapp_clicked int [default: 0]
+
+  // Performance
+  avg_delivery_time_ms int [null, note: 'Average email delivery time in milliseconds']
+
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    date
+    notification_type
+    (date, notification_type) [unique]
+  }
+
+  Note: '''
+  Daily aggregated statistics for monitoring.
+  Updated by scheduled job (daily).
+  Used for analytics dashboard.
+  '''
+}
+
+// Unsubscribe Tokens (for email unsubscribe links)
+Table unsubscribe_tokens {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, note: 'Reference to users.id in user_db']
+
+  // Token
+  token varchar(255) [not null, unique, note: 'Secure random token']
+
+  // Type-specific unsubscribe (optional)
+  notification_type notification_type [null, note: 'NULL = unsubscribe from all emails']
+
+  // Status
+  is_used boolean [default: false]
+  used_at timestamptz [null]
+
+  // Expiration
+  expires_at timestamptz [not null, note: 'Tokens expire after 30 days']
+
+  // Metadata
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    token [unique]
+    user_id
+    expires_at
+  }
+
+  Note: '''
+  One-time tokens for email unsubscribe links.
+  Generated when sending emails with unsubscribe footer.
+  '''
+}

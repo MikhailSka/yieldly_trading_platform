@@ -1,0 +1,326 @@
+classDiagram
+    %% Controllers
+    class AuthController {
+        -sessionManager: SessionManager
+        -inviteCodeManager: InviteCodeManager
+        -oauthHandler: OAuthHandler
+        -userRepository: IUserRepository
+        +Register(request: RegisterRequest) UserResponse
+        +RegisterWithOAuth(request: OAuthRegisterRequest) UserResponse
+        +Login(request: LoginRequest) LoginResponse
+        +LoginWithGoogle(code: string) LoginResponse
+        +Logout(token: string) void
+        +RefreshToken(refreshToken: string) TokenResponse
+        +RequestPasswordReset(email: string) void
+        +ResetPassword(token: string, newPassword: string) void
+        +VerifyEmail(token: string) void
+    }
+
+    class ProfileController {
+        -userRepository: IUserRepository
+        -blobStorage: IBlobStorage
+        +GetProfile(userID: UUID) ProfileResponse
+        +GetPublicProfile(userID: UUID) PublicProfileResponse
+        +UpdateProfile(userID: UUID, request: UpdateProfileRequest) ProfileResponse
+        +UploadAvatar(userID: UUID, file: File) string
+        +ExportData(userID: UUID) void
+        +RequestAccountDeletion(userID: UUID) void
+        +CancelDeletion(userID: UUID) void
+    }
+
+    class AdminController {
+        -userRepository: IUserRepository
+        -inviteCodeManager: InviteCodeManager
+        +ListUsers(filters: UserFilters) PaginatedUserResponse
+        +GetUser(userID: UUID) UserResponse
+        +SuspendUser(userID: UUID, reason: string) void
+        +ReactivateUser(userID: UUID) void
+        +GenerateInviteCodes(request: GenerateCodesRequest) List~InviteCode~
+        +ListInviteCodes(filters: InviteCodeFilters) PaginatedInviteCodeResponse
+        +RevokeInviteCode(codeID: UUID) void
+    }
+
+    %% Core Logic
+    class SessionManager {
+        -cacheManager: ICacheManager
+        -jwtSecret: string
+        -accessTokenTTL: Duration
+        -refreshTokenTTL: Duration
+        +CreateSession(userID: UUID) (string, string, error)
+        +ValidateToken(token: string) (UUID, error)
+        +RefreshSession(refreshToken: string) (string, string, error)
+        +InvalidateSession(userID: UUID) error
+        -generateJWT(userID: UUID, expiresIn: Duration) string
+        -generateRefreshToken() string
+    }
+
+    class InviteCodeManager {
+        -repository: IUserRepository
+        +Validate(code: string) ValidationResult
+        +UseCode(code: string, userID: UUID) error
+        +Generate(count: int, config: InviteCodeConfig) List~InviteCode~
+        +Revoke(codeID: UUID) error
+        +GetUsage(codeID: UUID) UsageStats
+        -checkExpiration(code: InviteCode) bool
+        -checkUsageLimit(code: InviteCode) bool
+        -incrementUsage(code: InviteCode) error
+    }
+
+    class OAuthHandler {
+        -auth0Client: Auth0Client
+        -userRepository: IUserRepository
+        +HandleGoogleLogin(code: string) User
+        +ExchangeCodeForToken(code: string) OAuthToken
+        +GetUserInfo(accessToken: string) OAuthUserInfo
+        -findOrCreateUser(userInfo: OAuthUserInfo) User
+    }
+
+    %% Repository
+    class IUserRepository {
+        <<interface>>
+        // User Operations
+        +CreateUser(user: User) error
+        +UpdateUser(user: User) error
+        +FindByID(userID: UUID) (User, error)
+        +FindByEmail(email: string) (User, error)
+        +FindAll(filters: UserFilters, page: int, pageSize: int) (List~User~, int, error)
+        +UpdateLastLogin(userID: UUID, ipAddress: string) error
+        +UpdatePassword(userID: UUID, passwordHash: string) error
+        +SuspendUser(userID: UUID, suspendedBy: UUID, reason: string) error
+        +ReactivateUser(userID: UUID) error
+        +ScheduleDeletion(userID: UUID, scheduledAt: Time) error
+        +SoftDelete(userID: UUID) error
+
+        // Profile & Preferences
+        +CreateProfile(userID: UUID, profile: Profile) error
+        +UpdateProfile(userID: UUID, profile: Profile) error
+        +GetProfile(userID: UUID) (Profile, error)
+        +CreatePreferences(userID: UUID, preferences: Preferences) error
+        +UpdatePreferences(userID: UUID, preferences: Preferences) error
+        +GetPreferences(userID: UUID) (Preferences, error)
+        +UpdateAvatar(userID: UUID, avatarURL: string) error
+
+        // Invite Codes
+        +SaveInviteCode(code: InviteCode) error
+        +FindInviteCodeByCode(code: string) (InviteCode, error)
+        +FindInviteCodeByID(codeID: UUID) (InviteCode, error)
+        +FindInviteCodes(filters: InviteCodeFilters, page: int, pageSize: int) (List~InviteCode~, int, error)
+        +IncrementInviteCodeUsage(codeID: UUID) error
+        +RevokeInviteCode(codeID: UUID, reason: string) error
+        +RecordInviteCodeUsage(codeID: UUID, userID: UUID) error
+
+        // Token Management
+        +SavePasswordResetToken(userID: UUID, tokenHash: string, expiresAt: Time) error
+        +FindPasswordResetToken(userID: UUID) (PasswordResetToken, error)
+        +MarkPasswordResetTokenUsed(tokenID: UUID) error
+        +SaveEmailVerificationToken(userID: UUID, tokenHash: string, email: string, expiresAt: Time) error
+        +FindEmailVerificationToken(userID: UUID) (EmailVerificationToken, error)
+        +MarkEmailVerified(userID: UUID) error
+
+        // Activity Logging
+        +LogUserActivity(userID: UUID, activityType: string, description: string, metadata: map) error
+        +GetUserActivity(userID: UUID, limit: int) (List~UserActivity~, error)
+
+        // GDPR
+        +CreateGDPRExport(userID: UUID) (UUID, error)
+        +UpdateGDPRExportStatus(exportID: UUID, status: string, exportURL: string) error
+        +CreateGDPRDeletionRequest(userID: UUID, reason: string) (UUID, error)
+        +UpdateGDPRDeletionStatus(requestID: UUID, status: string) error
+    }
+
+    class UserRepository {
+        -db: Database
+        // Implements all IUserRepository methods
+        +CreateUser(user: User) error
+        +UpdateUser(user: User) error
+        +FindByID(userID: UUID) (User, error)
+        +FindByEmail(email: string) (User, error)
+        +FindAll(filters: UserFilters, page: int, pageSize: int) (List~User~, int, error)
+        +UpdateLastLogin(userID: UUID, ipAddress: string) error
+        +UpdatePassword(userID: UUID, passwordHash: string) error
+        +SuspendUser(userID: UUID, suspendedBy: UUID, reason: string) error
+        +ReactivateUser(userID: UUID) error
+        +ScheduleDeletion(userID: UUID, scheduledAt: Time) error
+        +SoftDelete(userID: UUID) error
+        +CreateProfile(userID: UUID, profile: Profile) error
+        +UpdateProfile(userID: UUID, profile: Profile) error
+        +GetProfile(userID: UUID) (Profile, error)
+        +CreatePreferences(userID: UUID, preferences: Preferences) error
+        +UpdatePreferences(userID: UUID, preferences: Preferences) error
+        +GetPreferences(userID: UUID) (Preferences, error)
+        +UpdateAvatar(userID: UUID, avatarURL: string) error
+        +SaveInviteCode(code: InviteCode) error
+        +FindInviteCodeByCode(code: string) (InviteCode, error)
+        +FindInviteCodeByID(codeID: UUID) (InviteCode, error)
+        +FindInviteCodes(filters: InviteCodeFilters, page: int, pageSize: int) (List~InviteCode~, int, error)
+        +IncrementInviteCodeUsage(codeID: UUID) error
+        +RevokeInviteCode(codeID: UUID, reason: string) error
+        +RecordInviteCodeUsage(codeID: UUID, userID: UUID) error
+        +SavePasswordResetToken(userID: UUID, tokenHash: string, expiresAt: Time) error
+        +FindPasswordResetToken(userID: UUID) (PasswordResetToken, error)
+        +MarkPasswordResetTokenUsed(tokenID: UUID) error
+        +SaveEmailVerificationToken(userID: UUID, tokenHash: string, email: string, expiresAt: Time) error
+        +FindEmailVerificationToken(userID: UUID) (EmailVerificationToken, error)
+        +MarkEmailVerified(userID: UUID) error
+        +LogUserActivity(userID: UUID, activityType: string, description: string, metadata: map) error
+        +GetUserActivity(userID: UUID, limit: int) (List~UserActivity~, error)
+        +CreateGDPRExport(userID: UUID) (UUID, error)
+        +UpdateGDPRExportStatus(exportID: UUID, status: string, exportURL: string) error
+        +CreateGDPRDeletionRequest(userID: UUID, reason: string) (UUID, error)
+        +UpdateGDPRDeletionStatus(requestID: UUID, status: string) error
+        -toUserModel(row: DatabaseRow) User
+        -toProfileModel(row: DatabaseRow) Profile
+        -toPreferencesModel(row: DatabaseRow) Preferences
+        -toInviteCodeModel(row: DatabaseRow) InviteCode
+        -toPasswordResetTokenModel(row: DatabaseRow) PasswordResetToken
+        -toEmailVerificationTokenModel(row: DatabaseRow) EmailVerificationToken
+    }
+
+    %% Cache
+    class ICacheManager {
+        <<interface>>
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+    }
+
+    class CacheManager {
+        -redis: RedisClient
+        -keyPrefix: string
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+        -buildKey(key: string) string
+    }
+
+    %% Blob Storage
+    class IBlobStorage {
+        <<interface>>
+        +Upload(key: string, data: bytes) string
+        +Download(key: string) bytes
+        +Delete(key: string) error
+    }
+
+    class BlobStorageAdapter {
+        -azureClient: AzureBlobClient
+        -containerName: string
+        +Upload(key: string, data: bytes) string
+        +Download(key: string) bytes
+        +Delete(key: string) error
+    }
+
+    %% Domain Models
+    class User {
+        +UserID: UUID
+        +Email: string
+        +PasswordHash: string
+        +Name: string
+        +Avatar: string
+        +Bio: string
+        +Role: UserRole
+        +Status: UserStatus
+        +TradingExperience: ExperienceLevel
+        +EmailVerified: bool
+        +CreatedAt: Time
+        +UpdatedAt: Time
+        +LastLoginAt: Time
+    }
+
+    %% NOTE: Sessions are managed in Redis cache, not as domain objects
+    %% Session data stored with key: session:{user_id}
+    %% Contains: { access_token, refresh_token, last_activity, expires_at }
+
+    class InviteCode {
+        +CodeID: UUID
+        +Code: string
+        +CreatedBy: UUID
+        +MaxUses: int
+        +CurrentUses: int
+        +ExpiresAt: Time
+        +Status: InviteCodeStatus
+        +AssignedRole: UserRole
+        +CreatedAt: Time
+    }
+
+    class Preferences {
+        +UserID: UUID
+        +Theme: string
+        +Language: string
+        +Timezone: string
+        +DefaultPositionSize: float
+        +MarginPreference: string
+        +PreferredPairs: List~string~
+        +NotificationSettings: NotificationSettings
+    }
+
+    class NotificationSettings {
+        +EmailEnabled: bool
+        +InAppEnabled: bool
+        +BacktestComplete: bool
+        +PortfolioAlerts: bool
+        +SystemUpdates: bool
+    }
+
+    %% Enums
+    class UserRole {
+        <<enumeration>>
+        ADMIN
+        BETA_TESTER
+        FREE_USER
+        SUBSCRIBER
+    }
+
+    class UserStatus {
+        <<enumeration>>
+        ACTIVE
+        SUSPENDED
+        PENDING_DELETION
+        DELETED
+    }
+
+    class InviteCodeStatus {
+        <<enumeration>>
+        ACTIVE
+        EXPIRED
+        REVOKED
+        EXHAUSTED
+    }
+
+    class ExperienceLevel {
+        <<enumeration>>
+        BEGINNER
+        INTERMEDIATE
+        ADVANCED
+    }
+
+    %% Relationships
+    AuthController --> SessionManager
+    AuthController --> InviteCodeManager
+    AuthController --> OAuthHandler
+    AuthController --> IUserRepository
+    
+    ProfileController --> IUserRepository
+    ProfileController --> IBlobStorage
+    
+    AdminController --> IUserRepository
+    AdminController --> InviteCodeManager
+    
+    SessionManager --> ICacheManager
+    
+    InviteCodeManager --> IUserRepository
+    InviteCodeManager ..> InviteCode
+    
+    OAuthHandler --> IUserRepository
+    OAuthHandler ..> User
+    
+    UserRepository ..|> IUserRepository
+    CacheManager ..|> ICacheManager
+    BlobStorageAdapter ..|> IBlobStorage
+    
+    User --> UserRole
+    User --> UserStatus
+    User --> ExperienceLevel
+    InviteCode --> InviteCodeStatus
+    InviteCode --> UserRole
+    
+    Preferences --> NotificationSettings

@@ -1,0 +1,594 @@
+classDiagram
+    %% Controllers and Consumers
+    class BacktestController {
+        -backtestRepository: IBacktestRepository
+        -indicatorLibraryManager: IndicatorLibraryManager
+        -cacheManager: ICacheManager
+        +RunBacktest(request: RunBacktestRequest) BacktestGroupResponse
+        +GetBacktest(backtestID: UUID) BacktestResponse
+        +GetBacktestStatus(backtestID: UUID) BacktestStatusResponse
+        +GetBacktestResults(backtestID: UUID) BacktestResultResponse
+        +GetBacktestReport(backtestID: UUID) ReportResponse
+        +GetBacktestTrades(backtestID: UUID, filters: TradeFilters) PaginatedTradeResponse
+        +ListBacktests(userID: UUID, filters: BacktestFilters) PaginatedBacktestResponse
+        +GetBacktestGroup(groupID: UUID) BacktestGroupResponse
+        +GetBacktestGroupStatus(groupID: UUID) BacktestGroupStatusResponse
+        +GetBacktestGroupResults(groupID: UUID) BacktestGroupResultsResponse
+        +ListBacktestGroups(userID: UUID, filters: GroupFilters) PaginatedGroupResponse
+        +CancelBacktest(backtestID: UUID) CancelResponse
+        +CancelBacktestGroup(groupID: UUID) CancelResponse
+        +GetBacktestQuota(userID: UUID) QuotaResponse
+        +GetRawIndicators(library: string) RawIndicatorListResponse
+        +ArchiveBacktest(backtestID: UUID) ArchiveResponse
+        +RestoreBacktest(backtestID: UUID) RestoreResponse
+        +DeleteBacktest(backtestID: UUID) DeleteResponse
+        +ArchiveBacktestGroup(groupID: UUID) ArchiveResponse
+        +RestoreBacktestGroup(groupID: UUID) RestoreResponse
+        +DeleteBacktestGroup(groupID: UUID) DeleteResponse
+    }
+
+    class JobConsumer {
+        -serviceBus: ServiceBusClient
+        -strategyAdapter: StrategyAdapter
+        -dataAdapter: DataAdapter
+        -backtestEngine: BacktestEngineWrapper
+        -resultParser: ResultParser
+        -reportFormatter: ReportFormatter
+        -resultPublisher: ResultPublisher
+        +Start() void
+        +Stop() void
+        +ProcessJob(job: BacktestJob) error
+        -handleJobError(job: BacktestJob, error: error) void
+        -updateJobStatus(jobID: UUID, status: JobStatus) void
+    }
+
+    %% Core Backtesting Logic
+    class StrategyAdapter {
+        -codeValidator: CodeValidator
+        -indicatorResolver: IndicatorResolver
+        +Adapt(userCode: string, config: StrategyConfig) BacktraderStrategy
+        -parseCode(code: string) ParsedStrategy
+        -validateCode(parsed: ParsedStrategy) error
+        -convertToBacktrader(parsed: ParsedStrategy) BacktraderStrategy
+        -injectIndicators(strategy: BacktraderStrategy, indicators: List~IndicatorCall~) void
+        -injectLogic(strategy: BacktraderStrategy, logic: StrategyLogic) void
+    }
+
+    class CodeValidator {
+        -maxCodeLength: int
+        -allowedImports: List~string~
+        -forbiddenPatterns: List~Regex~
+        +Validate(code: string) ValidationResult
+        -checkSyntax(code: string) error
+        -checkSecurity(code: string) List~SecurityIssue~
+        -parseAST(code: string) ASTNode
+    }
+
+    class IndicatorResolver {
+        -indicatorLibraryManager: IndicatorLibraryManager
+        +Resolve(call: IndicatorCall) TALibFunction
+        +ValidateIndicatorCall(call: IndicatorCall) error
+        -getIndicatorDefinition(name: string) IndicatorDefinition
+    }
+
+    class DataAdapter {
+        -historicalDataRepo: IHistoricalDataRepository
+        -cacheManager: ICacheManager
+        +FetchData(symbol: string, interval: string, startTime: Time, endTime: Time) DataFrame
+        +FormatForBacktrader(data: DataFrame) BacktraderDataFeed
+        -preprocessData(data: DataFrame) DataFrame
+        -handleMissingValues(data: DataFrame) DataFrame
+    }
+
+    class BacktestEngineWrapper {
+        -initialCapital: float
+        -commission: float
+        -slippage: float
+        +Execute(strategy: BacktraderStrategy, data: BacktraderDataFeed, config: BacktestConfig) BacktestResult
+        -configureCerebro(config: BacktestConfig) Cerebro
+        -addAnalyzers(cerebro: Cerebro) void
+        -runBacktest(cerebro: Cerebro) RawResult
+    }
+
+    class IndicatorLibraryManager {
+        -talibWrapper: TALibWrapper
+        -cache: Map~string,IndicatorDefinition~
+        +GetAllIndicators(library: string) List~IndicatorDefinition~
+        +GetIndicator(name: string, library: string) IndicatorDefinition
+        +CalculateIndicator(name: string, data: DataFrame, params: Map) Series
+        -loadTALibIndicators() List~IndicatorDefinition~
+        -cacheIndicatorDefinitions() void
+    }
+
+    class TALibWrapper {
+        +GetFunctions() List~string~
+        +GetFunctionInfo(name: string) FunctionInfo
+        +Calculate(name: string, data: DataFrame, params: Map) Series
+    }
+
+    class ResultParser {
+        +Parse(rawResult: RawResult) ParsedResult
+        -extractTrades(rawResult: RawResult) List~Trade~
+        -extractMetrics(rawResult: RawResult) PerformanceMetrics
+        -extractEquityCurve(rawResult: RawResult) List~EquityPoint~
+        -extractDrawdownCurve(rawResult: RawResult) List~DrawdownPoint~
+    }
+
+    class ReportFormatter {
+        +Format(parsedResult: ParsedResult) BacktestReport
+        -formatSummary(metrics: PerformanceMetrics) ReportSummary
+        -formatEquityCurve(curve: List~EquityPoint~) ChartData
+        -formatTradeTable(trades: List~Trade~) TradeTable
+        -formatPerformanceBreakdown(metrics: PerformanceMetrics) PerformanceBreakdown
+    }
+
+    class ResultPublisher {
+        -backtestRepository: IBacktestRepository
+        -blobStorage: IBlobStorage
+        -serviceBus: ServiceBusClient
+        +Publish(backtestID: UUID, report: BacktestReport) error
+        -saveSummary(backtestID: UUID, summary: ReportSummary) error
+        -saveDetailedReport(backtestID: UUID, report: BacktestReport) string
+        -publishCompletionEvent(backtestID: UUID, userID: UUID) error
+    }
+
+    %% Repositories
+    class IBacktestRepository {
+        <<interface>>
+        %% Group Operations
+        +SaveGroup(group: BacktestGroup) error
+        +UpdateGroup(group: BacktestGroup) error
+        +FindGroupByID(groupID: UUID) BacktestGroup
+        +FindGroupsByUserID(userID: UUID, filters: GroupFilters) List~BacktestGroup~
+        +CountGroupsByUserID(userID: UUID, filters: GroupFilters) int
+        +FindBacktestsByGroupID(groupID: UUID) List~Backtest~
+        +UpdateGroupStatus(groupID: UUID, status: BacktestGroupStatus) error
+        +IncrementGroupCompleted(groupID: UUID) error
+        +IncrementGroupFailed(groupID: UUID) error
+        %% Backtest Operations
+        +Save(backtest: Backtest) error
+        +Update(backtest: Backtest) error
+        +FindByID(backtestID: UUID) Backtest
+        +FindByUserID(userID: UUID, filters: BacktestFilters) List~Backtest~
+        +CountByUserID(userID: UUID, filters: BacktestFilters) int
+        +SaveResult(result: BacktestResult) error
+        +GetResult(backtestID: UUID) BacktestResult
+        +SaveTrade(trade: Trade) error
+        +GetTrades(backtestID: UUID, filters: TradeFilters) List~Trade~
+        +CountTrades(backtestID: UUID, filters: TradeFilters) int
+        +GetUserQuota(userID: UUID, period: string) QuotaUsage
+        +CreateOrUpdateQuota(userID: UUID, periodStart: Time, periodEnd: Time) QuotaUsage
+        +IncrementQuotaUsage(userID: UUID, count: int) error
+        +SaveEvent(backtestID: UUID, eventType: string, data: jsonb) error
+        +GetLatestEvent(backtestID: UUID, eventType: string) BacktestEvent
+        %% Archive Operations
+        +ArchiveBacktest(backtestID: UUID) error
+        +RestoreBacktest(backtestID: UUID) error
+        +SoftDeleteBacktest(backtestID: UUID) error
+        +ArchiveGroup(groupID: UUID) int
+        +RestoreGroup(groupID: UUID) int
+        +SoftDeleteGroup(groupID: UUID) int
+    }
+
+    class BacktestRepository {
+        -db: Database
+        %% Group Operations
+        +SaveGroup(group: BacktestGroup) error
+        +UpdateGroup(group: BacktestGroup) error
+        +FindGroupByID(groupID: UUID) BacktestGroup
+        +FindGroupsByUserID(userID: UUID, filters: GroupFilters) List~BacktestGroup~
+        +CountGroupsByUserID(userID: UUID, filters: GroupFilters) int
+        +FindBacktestsByGroupID(groupID: UUID) List~Backtest~
+        +UpdateGroupStatus(groupID: UUID, status: BacktestGroupStatus) error
+        +IncrementGroupCompleted(groupID: UUID) error
+        +IncrementGroupFailed(groupID: UUID) error
+        %% Backtest Operations
+        +Save(backtest: Backtest) error
+        +Update(backtest: Backtest) error
+        +FindByID(backtestID: UUID) Backtest
+        +FindByUserID(userID: UUID, filters: BacktestFilters) List~Backtest~
+        +CountByUserID(userID: UUID, filters: BacktestFilters) int
+        +SaveResult(result: BacktestResult) error
+        +GetResult(backtestID: UUID) BacktestResult
+        +SaveTrade(trade: Trade) error
+        +GetTrades(backtestID: UUID, filters: TradeFilters) List~Trade~
+        +CountTrades(backtestID: UUID, filters: TradeFilters) int
+        +GetUserQuota(userID: UUID, period: string) QuotaUsage
+        +CreateOrUpdateQuota(userID: UUID, periodStart: Time, periodEnd: Time) QuotaUsage
+        +IncrementQuotaUsage(userID: UUID, count: int) error
+        +SaveEvent(backtestID: UUID, eventType: string, data: jsonb) error
+        +GetLatestEvent(backtestID: UUID, eventType: string) BacktestEvent
+        %% Archive Operations
+        +ArchiveBacktest(backtestID: UUID) error
+        +RestoreBacktest(backtestID: UUID) error
+        +SoftDeleteBacktest(backtestID: UUID) error
+        +ArchiveGroup(groupID: UUID) int
+        +RestoreGroup(groupID: UUID) int
+        +SoftDeleteGroup(groupID: UUID) int
+        -toGroupModel(row: DatabaseRow) BacktestGroup
+        -toBacktestModel(row: DatabaseRow) Backtest
+        -toResultModel(row: DatabaseRow) BacktestResult
+        -toTradeModel(row: DatabaseRow) Trade
+        -toQuotaModel(row: DatabaseRow) QuotaUsage
+        -toEventModel(row: DatabaseRow) BacktestEvent
+    }
+
+    class IHistoricalDataRepository {
+        <<interface>>
+        +GetOHLCV(symbol: string, interval: string, startTime: Time, endTime: Time) List~OHLCV~
+        +GetLatestCandle(symbol: string, interval: string) OHLCV
+    }
+
+    class HistoricalDataRepository {
+        -db: Database
+        +GetOHLCV(symbol: string, interval: string, startTime: Time, endTime: Time) List~OHLCV~
+        +GetLatestCandle(symbol: string, interval: string) OHLCV
+        -buildQuery(symbol: string, interval: string, startTime: Time, endTime: Time) Query
+        -toOHLCVModel(row: DatabaseRow) OHLCV
+    }
+
+    %% Cache
+    class ICacheManager {
+        <<interface>>
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+    }
+
+    class CacheManager {
+        -redis: RedisClient
+        -keyPrefix: string
+        +Get(key: string) any
+        +Set(key: string, value: any, ttl: Duration) error
+        +Delete(key: string) error
+        -buildKey(key: string) string
+        -serialize(data: any) string
+        -deserialize(data: string) any
+    }
+
+    %% Blob Storage
+    class IBlobStorage {
+        <<interface>>
+        +Upload(key: string, data: bytes) string
+        +Download(key: string) bytes
+        +Delete(key: string) error
+        +GetURL(key: string) string
+    }
+
+    class BlobStorageAdapter {
+        -azureClient: AzureBlobClient
+        -containerName: string
+        +Upload(key: string, data: bytes) string
+        +Download(key: string) bytes
+        +Delete(key: string) error
+        +GetURL(key: string) string
+    }
+
+    %% Domain Models
+    class BacktestGroup {
+        +GroupID: UUID
+        +UserID: UUID
+        +StrategyID: UUID
+        +StrategyCode: TEXT
+        +StrategyName: string
+        +Symbols: List~string~
+        +SymbolCount: int
+        +Timeframe: string
+        +StartDate: Time
+        +EndDate: Time
+        +InitialCapital: float
+        +Commission: float
+        +Slippage: float
+        +Status: BacktestGroupStatus
+        +BacktestsCompleted: int
+        +BacktestsFailed: int
+        +CreatedAt: Time
+        +StartedAt: Time
+        +CompletedAt: Time
+        +ArchivedAt: Time
+        +DeletedAt: Time
+    }
+
+    class Backtest {
+        +BacktestID: UUID
+        +GroupID: UUID
+        +UserID: UUID
+        +StrategyID: UUID
+        +StrategyCode: TEXT
+        +Symbol: string
+        +Interval: string
+        +StartDate: Time
+        +EndDate: Time
+        +InitialCapital: float
+        +Commission: float
+        +Slippage: float
+        +Status: BacktestStatus
+        +CreatedAt: Time
+        +StartedAt: Time
+        +CompletedAt: Time
+        +ArchivedAt: Time
+        +DeletedAt: Time
+    }
+
+    class BacktestResult {
+        +ResultID: UUID
+        +BacktestID: UUID
+        +InitialCapital: float
+        +FinalCapital: float
+        +TotalReturn: float
+        +SharpeRatio: float
+        +MaxDrawdown: float
+        +TotalTrades: int
+        +WinRate: float
+        +ProfitFactor: float
+        +EquityCurveURL: string
+        +DetailedReportURL: string
+    }
+
+    class Trade {
+        +TradeID: UUID
+        +BacktestID: UUID
+        +EntryTime: Time
+        +ExitTime: Time
+        +Symbol: string
+        +Direction: TradeDirection
+        +EntryPrice: float
+        +ExitPrice: float
+        +Quantity: float
+        +PnL: float
+        +PnLPercent: float
+        +Commission: float
+    }
+
+    class BacktestJob {
+        +JobID: UUID
+        +BacktestID: UUID
+        +UserID: UUID
+        +StrategyCode: TEXT
+        +Config: BacktestConfig
+        +Status: JobStatus
+        +CreatedAt: Time
+    }
+
+    class BacktestConfig {
+        +Symbol: string
+        +Interval: string
+        +StartDate: Time
+        +EndDate: Time
+        +InitialCapital: float
+        +Commission: float
+        +Slippage: float
+    }
+
+    class IndicatorDefinition {
+        +Name: string
+        +FullName: string
+        +Category: string
+        +Library: string
+        +Parameters: List~Parameter~
+        +Input: List~string~
+        +Output: List~string~
+        +Function: string
+    }
+
+    class Parameter {
+        +Name: string
+        +Type: string
+        +Default: any
+        +Min: float
+        +Max: float
+        +Description: string
+    }
+
+    class PerformanceMetrics {
+        +InitialCapital: float
+        +FinalCapital: float
+        +TotalReturn: float
+        +AnnualReturn: float
+        +SharpeRatio: float
+        +SortinoRatio: float
+        +CalmarRatio: float
+        +MaxDrawdown: float
+        +AvgDrawdown: float
+        +TotalTrades: int
+        +WinningTrades: int
+        +LosingTrades: int
+        +WinRate: float
+        +ProfitFactor: float
+        +AvgWin: float
+        +AvgLoss: float
+        +LargestWin: float
+        +LargestLoss: float
+    }
+
+    class BacktestReport {
+        +Summary: ReportSummary
+        +EquityCurve: ChartData
+        +DrawdownCurve: ChartData
+        +Trades: List~Trade~
+        +Metrics: PerformanceMetrics
+    }
+
+    class QuotaUsage {
+        +UserID: UUID
+        +Period: string
+        +PeriodStart: Time
+        +PeriodEnd: Time
+        +BacktestsRun: int
+        +BacktestsLimit: int
+        +Remaining: int
+        +Status: QuotaStatus
+    }
+
+    class BacktestEvent {
+        +EventID: UUID
+        +BacktestID: UUID
+        +EventType: string
+        +EventTimestamp: Time
+        +EventMessage: string
+        +EventData: jsonb
+    }
+
+    class BacktestFilters {
+        +Status: BacktestStatus
+        +Symbol: string
+        +Timeframe: string
+        +StrategyID: UUID
+        +GroupID: UUID
+        +StandaloneOnly: bool
+        +DateFrom: Time
+        +DateTo: Time
+        +Search: string
+        +IncludeArchived: bool
+        +Page: int
+        +PageSize: int
+        +SortBy: string
+        +SortOrder: string
+    }
+
+    class TradeFilters {
+        +Direction: TradeDirection
+        +Profitable: bool
+        +DateFrom: Time
+        +DateTo: Time
+        +Search: string
+        +Page: int
+        +PageSize: int
+        +SortBy: string
+        +SortOrder: string
+    }
+
+    class GroupFilters {
+        +Status: BacktestGroupStatus
+        +StrategyID: UUID
+        +DateFrom: Time
+        +DateTo: Time
+        +Search: string
+        +IncludeArchived: bool
+        +Page: int
+        +PageSize: int
+        +SortBy: string
+        +SortOrder: string
+    }
+
+    class OHLCV {
+        +Timestamp: Time
+        +Open: float
+        +High: float
+        +Low: float
+        +Close: float
+        +Volume: float
+    }
+
+    %% Enums
+    class BacktestStatus {
+        <<enumeration>>
+        QUEUED
+        RUNNING
+        COMPLETED
+        FAILED
+        CANCELLED
+    }
+
+    class JobStatus {
+        <<enumeration>>
+        PENDING
+        PROCESSING
+        COMPLETED
+        FAILED
+    }
+
+    class TradeDirection {
+        <<enumeration>>
+        LONG
+        SHORT
+    }
+
+    class QuotaStatus {
+        <<enumeration>>
+        AVAILABLE
+        LOW
+        EXHAUSTED
+    }
+
+    class BacktestGroupStatus {
+        <<enumeration>>
+        QUEUED
+        RUNNING
+        COMPLETED
+        CANCELLED
+    }
+
+    %% Relationships
+    BacktestController --> IBacktestRepository
+    BacktestController --> IndicatorLibraryManager
+    BacktestController ..> Backtest
+    BacktestController ..> BacktestResult
+    BacktestController ..> Trade
+    BacktestController ..> IndicatorDefinition
+    
+    JobConsumer --> StrategyAdapter
+    JobConsumer --> DataAdapter
+    JobConsumer --> BacktestEngineWrapper
+    JobConsumer --> ResultParser
+    JobConsumer --> ReportFormatter
+    JobConsumer --> ResultPublisher
+    JobConsumer ..> BacktestJob
+    
+    StrategyAdapter --> CodeValidator
+    StrategyAdapter --> IndicatorResolver
+    
+    IndicatorResolver --> IndicatorLibraryManager
+    
+    DataAdapter --> IHistoricalDataRepository
+    DataAdapter --> ICacheManager
+    DataAdapter ..> OHLCV
+    
+    BacktestEngineWrapper ..> PerformanceMetrics
+    
+    IndicatorLibraryManager --> TALibWrapper
+    IndicatorLibraryManager ..> IndicatorDefinition
+    IndicatorLibraryManager ..> Parameter
+    
+    ResultParser ..> PerformanceMetrics
+    ResultParser ..> Trade
+    
+    ReportFormatter ..> BacktestReport
+    
+    ResultPublisher --> IBacktestRepository
+    ResultPublisher --> IBlobStorage
+    ResultPublisher ..> BacktestReport
+    
+    BacktestRepository ..|> IBacktestRepository
+    HistoricalDataRepository ..|> IHistoricalDataRepository
+    CacheManager ..|> ICacheManager
+    BlobStorageAdapter ..|> IBlobStorage
+    
+    Backtest --> BacktestStatus
+    BacktestJob --> JobStatus
+    Trade --> TradeDirection
+    
+    BacktestResult --> Backtest
+    Trade --> Backtest
+    
+    BacktestReport --> PerformanceMetrics
+    BacktestReport --> Trade
+
+    IndicatorDefinition --> Parameter
+
+    QuotaUsage --> QuotaStatus
+    BacktestEvent --> Backtest
+    BacktestFilters --> BacktestStatus
+    TradeFilters --> TradeDirection
+
+    BacktestController --> ICacheManager
+    BacktestController ..> QuotaUsage
+    BacktestController ..> BacktestEvent
+    BacktestController ..> BacktestFilters
+    BacktestController ..> TradeFilters
+    BacktestController ..> BacktestGroup
+    BacktestController ..> GroupFilters
+
+    BacktestGroup --> BacktestGroupStatus
+    BacktestGroup "1" --> "0..*" Backtest : contains
+    GroupFilters --> BacktestGroupStatus

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node docs/scripts/consolidate-docs.js:*)",
+      "Bash(node:*)",
+      "Bash(ren PROC-BACKTEST-010.md PROC-BACKTEST-009.md)",
+      "Bash(ren PROC-BACKTEST-011.md PROC-BACKTEST-010.md)",
+      "Bash(ren PROC-BACKTEST-012.md PROC-BACKTEST-011.md)",
+      "Bash(ren PROC-BACKTEST-013.md PROC-BACKTEST-012.md)",
+      "Bash(ren PROC-BACKTEST-014.md PROC-BACKTEST-013.md)",
+      "Bash(ren PROC-BACKTEST-015.md PROC-BACKTEST-014.md)",
+      "Bash(ren PROC-BACKTEST-016.md PROC-BACKTEST-015.md)",
+      "Bash(git init:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -1,0 +1,92 @@
+classDiagram
+    class DataValidator {
+        -minPrice: float
+        -maxPrice: float
+        -minVolume: float
+        -maxPriceChange: float
+        +Validate(data: List~OHLCV~) ValidationResult
+        +ValidateSingle(candle: OHLCV) ValidationResult
+        +DetectGaps(data: List~OHLCV~, expectedInterval: string) List~Gap~
+        +DetectDuplicates(data: List~OHLCV~) List~Duplicate~
+        +ValidateFormat(data: List~OHLCV~) FormatValidationResult
+        -checkPriceRange(candle: OHLCV) bool
+        -checkVolumeRange(candle: OHLCV) bool
+        -checkPriceRelationships(candle: OHLCV) bool
+        -checkTimestampSequence(data: List~OHLCV~) bool
+    }
+
+    class GapDetector {
+        +DetectGaps(data: List~OHLCV~, expectedInterval: Duration) List~Gap~
+        -calculateExpectedTimestamps(start: Time, end: Time, interval: Duration) List~Time~
+        -findMissingTimestamps(actual: List~Time~, expected: List~Time~) List~Time~
+    }
+
+    class ValueRangeValidator {
+        -config: ValidationConfig
+        +ValidatePrice(price: float) bool
+        +ValidateVolume(volume: float) bool
+        +ValidatePriceChange(oldPrice: float, newPrice: float, maxChange: float) bool
+        -isWithinRange(value: float, min: float, max: float) bool
+    }
+
+    class FormatValidator {
+        +ValidateOHLCV(candle: OHLCV) List~FormatError~
+        +ValidateTimestamp(timestamp: Time) bool
+        -checkOHLCLogic(candle: OHLCV) bool
+        -checkNonNegative(candle: OHLCV) bool
+    }
+
+    class DuplicateChecker {
+        +FindDuplicates(data: List~OHLCV~) List~Duplicate~
+        -buildTimestampIndex(data: List~OHLCV~) Map~Time,int~
+    }
+
+    class ValidationResult {
+        +Valid: bool
+        +Errors: List~ValidationError~
+        +Warnings: List~ValidationWarning~
+        +GapsDetected: List~Gap~
+        +DuplicatesDetected: List~Duplicate~
+    }
+
+    class Gap {
+        +StartTime: Time
+        +EndTime: Time
+        +MissingCandles: int
+    }
+
+    class Duplicate {
+        +Timestamp: Time
+        +Count: int
+        +Indices: List~int~
+    }
+
+    class ValidationError {
+        +Code: string
+        +Message: string
+        +Index: int
+        +Timestamp: Time
+        +Field: string
+    }
+
+    class OHLCV {
+        +Timestamp: Time
+        +Open: float
+        +High: float
+        +Low: float
+        +Close: float
+        +Volume: float
+    }
+
+    DataValidator --> GapDetector
+    DataValidator --> ValueRangeValidator
+    DataValidator --> FormatValidator
+    DataValidator --> DuplicateChecker
+    DataValidator ..> ValidationResult
+    DataValidator ..> OHLCV
+    
+    GapDetector ..> Gap
+    DuplicateChecker ..> Duplicate
+    ValidationResult --> Gap
+    ValidationResult --> Duplicate
+    ValidationResult --> ValidationError
