@@ -3,3 +3,7 @@
 
 # Local working files
 /prompt.md
+/posts/
+
+# Private agents (contain personal info)
+/.claude/agents/linkedin-post-writer.md
