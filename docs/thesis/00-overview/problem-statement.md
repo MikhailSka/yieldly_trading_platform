@@ -8,6 +8,22 @@ Traditional architectural frameworks (TOGAF, C4, ADRs) were designed for human r
 
 This research uses **Yieldly**, an algorithmic trading backtesting platform, as a case study. See [[current-state-analysis]] for detailed documentation inventory.
 
+## Human-AI Collaboration Model
+
+This research does NOT aim for AI to write 100% of the code or generate all documentation autonomously. Humans remain the primary element — they control, verify, and make final decisions.
+
+**AI as an accelerator, not a replacement:**
+
+- **Documentation:** AI formats and structures human-written content, transforms decisions into templates, ensures consistency. The domain knowledge and architectural decisions come from humans.
+- **Code generation:** AI writes the foundational skeleton — basic APIs, database schemas, CRUD operations, boilerplate. This reduces repetitive work but still requires human review.
+- **Quality control:** AI will make errors. The workflow assumes humans review generated output, identify mistakes, and either direct AI to fix them or fix them manually.
+
+**Why this matters:**
+
+You need domain expertise to control AI effectively. A developer who doesn't understand the business logic cannot verify whether AI-generated code is correct. This documentation approach improves how AI generates the *skeleton* of applications and documents — the structure, the patterns, the boilerplate — while humans provide the intelligence and verification.
+
+**The goal:** Faster development cycles through reduced repetitive work, NOT blind automation.
+
 ## The Problem
 
 **Core Issue:** Documentation structures optimized for human understanding do not necessarily work well for AI code generation.
